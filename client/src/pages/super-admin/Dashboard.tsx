@@ -19,7 +19,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 
-const API_BASE = "http://localhost:4000/api/v1";
+const API_BASE = "https://4000-ip7j6bqy2pdjp23wy2koy-648bfd36.sg1.manus.computer/api/v1";
 
 type Analytics = {
   totalGyms: number;
@@ -165,9 +165,10 @@ export default function SuperAdminDashboard() {
         }),
       });
 
-      event.currentTarget.reset();
+      const form = event.currentTarget;
       setMessage("Gym trial created. Admin account and isolated Mongo database are ready.");
       await loadPlatform();
+      form.reset();
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Could not create gym");
     } finally {

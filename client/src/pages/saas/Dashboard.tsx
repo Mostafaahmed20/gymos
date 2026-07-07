@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-const API_BASE = "http://localhost:4000/api/v1";
+const API_BASE = "https://4000-ip7j6bqy2pdjp23wy2koy-648bfd36.sg1.manus.computer/api/v1";
 
 type Stats = {
   totalMembers: number;
@@ -160,7 +160,8 @@ export default function SaasDashboard() {
     event.preventDefault();
     setMessage("");
     setError("");
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
 
     try {
       await apiFetch("/members", {
@@ -171,9 +172,9 @@ export default function SaasDashboard() {
           phone: data.get("phone") || undefined,
         }),
       });
-      event.currentTarget.reset();
       setMessage("Member added successfully.");
       await loadDashboard();
+      form.reset();
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Could not add member");
     }
@@ -183,7 +184,8 @@ export default function SaasDashboard() {
     event.preventDefault();
     setMessage("");
     setError("");
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
 
     try {
       await apiFetch("/coaches", {
@@ -194,9 +196,9 @@ export default function SaasDashboard() {
           phone: data.get("phone") || undefined,
         }),
       });
-      event.currentTarget.reset();
       setMessage("Trainer added successfully.");
       await loadDashboard();
+      form.reset();
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Could not add trainer");
     }
