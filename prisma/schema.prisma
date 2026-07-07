@@ -1,0 +1,417 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  OWNER
+  MANAGER
+  RECEPTIONIST
+  COACH
+  SUPER_ADMIN
+}
+
+enum GymPlan {
+  TRIAL
+  BASIC
+  PRO
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum GymStatus {
+  ACTIVE
+  INACTIVE
+  TRIAL
+  SUSPENDED
+  EXPIRED
+  CANCELLED
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  PAID
+  OVERDUE
+  CANCELED
+}
+
+enum AttendanceMethod {
+  QR
+  MANUAL
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  WALLET
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  WHATSAPP
+}
+
+model Gym {
+  id              String   @id @default(cuid())
+  slug            String   @unique
+  name            String
+  ownerName       String?
+  ownerEmail      String?
+  ownerPhone      String?
+  country         String?
+  city            String?
+  address         String?
+  logoUrl         String?
+  domain          String?
+  subdomain       String?
+  databaseName    String?  @unique
+  databaseUri     String?
+  brandPrimary    String?  @default("#0f172a")
+  brandSecondary  String?  @default("#22c55e")
+  status          GymStatus @default(ACTIVE)
+  plan            GymPlan   @default(BASIC)
+  trialStartDate  DateTime
+  trialEndDate    DateTime
+  subscriptionEnd DateTime?
+  maxMembers      Int?
+  maxTrainers     Int?
+  storageLimitGb  Int?
+  settings        Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime?
+
+  users           User[]
+  members         Member[]
+  coaches         Coach[]
+  employees       Employee[]
+  memberships     Membership[]
+  attendance      Attendance[]
+  payments        Payment[]
+  subscriptions   Subscription[]
+  invoices        Invoice[]
+  notifications   Notification[]
+  workoutPlans    WorkoutPlan[]
+  dietPlans       DietPlan[]
+  workoutAssignments WorkoutPlanAssignment[]
+  dietAssignments DietPlanAssignment[]
+  activityLogs    ActivityLog[]
+  refreshTokens   RefreshToken[]
+  backups         BackupJob[]
+}
+
+model User {
+  id           String    @id @default(cuid())
+  gymId        String?
+  gym          Gym?      @relation(fields: [gymId], references: [id])
+  fullName     String
+  email        String
+  passwordHash String
+  role         UserRole
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  activityLogs ActivityLog[]
+  tokens       RefreshToken[]
+
+  @@unique([gymId, email])
+  @@index([gymId, role, deletedAt])
+}
+
+model Member {
+  id                String    @id @default(cuid())
+  gymId             String
+  gym               Gym       @relation(fields: [gymId], references: [id])
+  code              String
+  fullName          String
+  email             String?
+  phone             String?
+  photoUrl          String?
+  emergencyContact  String?
+  emergencyPhone    String?
+  dateOfBirth       DateTime?
+  gender            String?
+  notes             String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+
+  memberships       Membership[]
+  attendance        Attendance[]
+  payments          Payment[]
+  invoices          Invoice[]
+  notifications     Notification[]
+  workoutPlans      WorkoutPlanAssignment[]
+  dietPlans         DietPlanAssignment[]
+
+  @@unique([gymId, code])
+  @@index([gymId, fullName, deletedAt])
+  @@index([gymId, email, deletedAt])
+}
+
+model Coach {
+  id         String    @id @default(cuid())
+  gymId      String
+  gym        Gym       @relation(fields: [gymId], references: [id])
+  fullName   String
+  email      String?
+  phone      String?
+  salary     Decimal?  @db.Decimal(12, 2)
+  notes      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+
+  assignments WorkoutPlanAssignment[]
+
+  @@index([gymId, deletedAt])
+}
+
+model Employee {
+  id         String    @id @default(cuid())
+  gymId      String
+  gym        Gym       @relation(fields: [gymId], references: [id])
+  fullName   String
+  email      String
+  phone      String?
+  role       UserRole
+  salary     Decimal?  @db.Decimal(12, 2)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+
+  @@unique([gymId, email])
+  @@index([gymId, role, deletedAt])
+}
+
+model Membership {
+  id           String             @id @default(cuid())
+  gymId        String
+  gym          Gym                @relation(fields: [gymId], references: [id])
+  memberId     String
+  member       Member             @relation(fields: [memberId], references: [id])
+  planName     String
+  startDate    DateTime
+  endDate      DateTime
+  freezeDays   Int                @default(0)
+  status       SubscriptionStatus @default(ACTIVE)
+  price        Decimal            @db.Decimal(12, 2)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  deletedAt    DateTime?
+
+  @@index([gymId, status, endDate, deletedAt])
+  @@index([memberId, deletedAt])
+}
+
+model Attendance {
+  id          String           @id @default(cuid())
+  gymId       String
+  gym         Gym              @relation(fields: [gymId], references: [id])
+  memberId    String
+  member      Member           @relation(fields: [memberId], references: [id])
+  checkInAt   DateTime
+  checkOutAt  DateTime?
+  method      AttendanceMethod @default(MANUAL)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  deletedAt   DateTime?
+
+  @@index([gymId, checkInAt, deletedAt])
+  @@index([memberId, deletedAt])
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  gymId       String
+  gym         Gym           @relation(fields: [gymId], references: [id])
+  memberId    String?
+  member      Member?       @relation(fields: [memberId], references: [id])
+  amount      Decimal       @db.Decimal(12, 2)
+  method      PaymentMethod
+  paidAt      DateTime      @default(now())
+  notes       String?
+  invoiceId   String?
+  invoice     Invoice?      @relation(fields: [invoiceId], references: [id])
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  deletedAt   DateTime?
+
+  @@index([gymId, paidAt, deletedAt])
+  @@index([memberId, deletedAt])
+}
+
+model Subscription {
+  id          String             @id @default(cuid())
+  gymId       String
+  gym         Gym                @relation(fields: [gymId], references: [id])
+  plan        GymPlan
+  status      SubscriptionStatus @default(ACTIVE)
+  startDate   DateTime
+  endDate     DateTime
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  deletedAt   DateTime?
+
+  @@index([gymId, status, deletedAt])
+}
+
+model Invoice {
+  id            String        @id @default(cuid())
+  gymId         String
+  gym           Gym           @relation(fields: [gymId], references: [id])
+  memberId      String?
+  member        Member?       @relation(fields: [memberId], references: [id])
+  total         Decimal       @db.Decimal(12, 2)
+  status        InvoiceStatus @default(DRAFT)
+  dueDate       DateTime?
+  issuedAt      DateTime      @default(now())
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
+
+  payments      Payment[]
+
+  @@index([gymId, status, deletedAt])
+}
+
+model Notification {
+  id          String              @id @default(cuid())
+  gymId       String
+  gym         Gym                 @relation(fields: [gymId], references: [id])
+  memberId    String?
+  member      Member?             @relation(fields: [memberId], references: [id])
+  title       String
+  message     String
+  channel     NotificationChannel @default(IN_APP)
+  sentAt      DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  deletedAt   DateTime?
+
+  @@index([gymId, channel, createdAt, deletedAt])
+}
+
+model WorkoutPlan {
+  id          String    @id @default(cuid())
+  gymId       String
+  gym         Gym       @relation(fields: [gymId], references: [id])
+  name        String
+  details     Json?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  assignments WorkoutPlanAssignment[]
+
+  @@index([gymId, deletedAt])
+}
+
+model DietPlan {
+  id          String    @id @default(cuid())
+  gymId       String
+  gym         Gym       @relation(fields: [gymId], references: [id])
+  name        String
+  details     Json?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  assignments DietPlanAssignment[]
+
+  @@index([gymId, deletedAt])
+}
+
+model WorkoutPlanAssignment {
+  id            String     @id @default(cuid())
+  gymId         String
+  gym           Gym        @relation(fields: [gymId], references: [id])
+  workoutPlanId String
+  workoutPlan   WorkoutPlan @relation(fields: [workoutPlanId], references: [id])
+  memberId      String
+  member        Member      @relation(fields: [memberId], references: [id])
+  coachId       String?
+  coach         Coach?      @relation(fields: [coachId], references: [id])
+  assignedAt    DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  deletedAt     DateTime?
+
+  @@index([gymId, memberId, deletedAt])
+}
+
+model DietPlanAssignment {
+  id         String    @id @default(cuid())
+  gymId      String
+  gym        Gym       @relation(fields: [gymId], references: [id])
+  dietPlanId String
+  dietPlan   DietPlan  @relation(fields: [dietPlanId], references: [id])
+  memberId   String
+  member     Member    @relation(fields: [memberId], references: [id])
+  assignedAt DateTime  @default(now())
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+
+  @@index([gymId, memberId, deletedAt])
+}
+
+model ActivityLog {
+  id          String   @id @default(cuid())
+  gymId       String
+  gym         Gym      @relation(fields: [gymId], references: [id])
+  actorId     String?
+  actor       User?    @relation(fields: [actorId], references: [id])
+  action      String
+  entity      String
+  entityId    String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  deletedAt   DateTime?
+
+  @@index([gymId, createdAt, deletedAt])
+}
+
+model RefreshToken {
+  id          String   @id @default(cuid())
+  gymId       String?
+  gym         Gym?     @relation(fields: [gymId], references: [id])
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  tokenHash   String
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, expiresAt, revokedAt])
+  @@index([gymId, userId])
+}
+
+model BackupJob {
+  id          String   @id @default(cuid())
+  gymId       String
+  gym         Gym      @relation(fields: [gymId], references: [id])
+  status      String
+  storageUrl  String?
+  startedAt   DateTime @default(now())
+  finishedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  @@index([gymId, startedAt, deletedAt])
+}
