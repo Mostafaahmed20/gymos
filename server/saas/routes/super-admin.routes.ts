@@ -35,11 +35,23 @@ const createGymSchema = z.object({
   city: z.string().optional(),
   address: z.string().optional(),
   domain: z.string().optional(),
-  plan: z.nativeEnum(GymPlan).default(GymPlan.TRIAL),
-  trialDays: z.coerce.number().int().min(1).max(365).default(SAAS_CONFIG.trialDays),
-  maxMembers: z.coerce.number().int().min(1).optional(),
-  maxTrainers: z.coerce.number().int().min(1).optional(),
-  storageLimitGb: z.coerce.number().int().min(1).optional(),
+  plan: z.nativeEnum(GymPlan).catch(GymPlan.TRIAL).default(GymPlan.TRIAL),
+  trialDays: z.preprocess(
+    (val) => (val === "" || val === null ? undefined : val),
+    z.coerce.number().int().min(1).max(365).default(SAAS_CONFIG.trialDays)
+  ),
+  maxMembers: z.preprocess(
+    (val) => (val === "" || val === null ? undefined : val),
+    z.coerce.number().int().min(1).optional()
+  ),
+  maxTrainers: z.preprocess(
+    (val) => (val === "" || val === null ? undefined : val),
+    z.coerce.number().int().min(1).optional()
+  ),
+  storageLimitGb: z.preprocess(
+    (val) => (val === "" || val === null ? undefined : val),
+    z.coerce.number().int().min(1).optional()
+  ),
 });
 
 function addDays(days: number) {
