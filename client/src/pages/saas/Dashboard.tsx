@@ -67,6 +67,28 @@ type UserSession = {
   role: string;
 };
 
+type GymInfo = {
+  id: string;
+  name: string;
+  slug: string;
+  ownerName: string;
+  ownerEmail: string;
+  ownerPhone?: string | null;
+  country?: string | null;
+  city?: string | null;
+  address?: string | null;
+  status: string;
+  plan: string;
+  trialStartDate?: string | null;
+  trialEndDate?: string | null;
+  subscriptionEnd?: string | null;
+  maxMembers: number;
+  maxTrainers: number;
+  storageLimitGb: number;
+  databaseName?: string | null;
+  createdAt: string;
+};
+
 type Section = "overview" | "members" | "trainers" | "attendance" | "payments" | "settings";
 
 function getAccessToken() {
@@ -112,18 +134,20 @@ export default function SaasDashboard() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [gymInfo, setGymInfo] = useState<GymInfo | null>(null);
   const session = useMemo(readSession, []);
 
   async function loadDashboard() {
     setLoading(true);
     setError("");
     try {
-      const [statsPayload, membersPayload, coachesPayload, paymentsPayload, attendancePayload] = await Promise.all([
+      const [statsPayload, membersPayload, coachesPayload, paymentsPayload, attendancePayload, gymPayload] = await Promise.all([
         apiFetch<Stats>("/dashboard/stats"),
         apiFetch<{ data: Member[] }>("/members?pageSize=50"),
         apiFetch<{ data: Coach[] }>("/coaches"),
         apiFetch<{ data: Payment[] }>("/payments?pageSize=20"),
         apiFetch<{ data: Attendance[] }>("/attendance?pageSize=20"),
+        apiFetch<{ gym: GymInfo }>("/gyms/me"),
       ]);
 
       setStats(statsPayload);
@@ -131,6 +155,7 @@ export default function SaasDashboard() {
       setCoaches(coachesPayload.data);
       setPayments(paymentsPayload.data);
       setAttendance(attendancePayload.data);
+      setGymInfo(gymPayload.gym);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load dashboard");
     } finally {
@@ -601,17 +626,119 @@ export default function SaasDashboard() {
         ) : null}
 
         {!loading && activeSection === "settings" ? (
-          <section className="mt-8">
-            <Card className="border-white/10 bg-white/[0.04] text-white">
-              <CardHeader>
-                <CardTitle>Tenant Isolation</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm text-white/70">
-                <p>This workspace is authenticated with the SaaS REST API and scoped to the logged-in gym.</p>
-                <p>Every request sends the tenant JWT, and the backend resolves the gym, license status, and tenant database.</p>
-                <p>The next build phase is moving every operational module fully into the isolated Mongo tenant database.</p>
-              </CardContent>
-            </Card>
+          <section className="mt-8 space-y-5">
+            {gymInfo ? (
+              <>
+                {/* Status Banner */}
+                <div className={`rounded-xl border px-5 py-4 ${
+                  gymInfo.status === "TRIAL"
+                    ? "border-amber-400/30 bg-amber-400/10 text-amber-200"
+                    : gymInfo.status === "ACTIVE"
+                    ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+                    : "border-red-400/30 bg-red-400/10 text-red-200"
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-lg font-bold">{gymInfo.name}</div>
+                      <div className="text-sm opacity-80">Slug: {gymInfo.slug}</div>
+                    </div>
+                    <div className="rounded-full border border-current px-3 py-1 text-sm font-semibold">
+                      {gymInfo.status}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Plan & Trial Info */}
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <Card className="border-white/10 bg-white/[0.04] text-white">
+                    <CardContent className="p-5">
+                      <div className="text-xs uppercase tracking-widest text-white/50">Plan</div>
+                      <div className="mt-2 text-2xl font-bold text-emerald-300">{gymInfo.plan}</div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="border-white/10 bg-white/[0.04] text-white">
+                    <CardContent className="p-5">
+                      <div className="text-xs uppercase tracking-widest text-white/50">Trial Ends</div>
+                      <div className="mt-2 text-2xl font-bold">
+                        {gymInfo.trialEndDate
+                          ? (() => {
+                              const days = Math.ceil((new Date(gymInfo.trialEndDate).getTime() - Date.now()) / 86400000);
+                              return days > 0
+                                ? <span className="text-amber-300">{days} days left</span>
+                                : <span className="text-red-400">Expired</span>;
+                            })()
+                          : <span className="text-white/40">N/A</span>}
+                      </div>
+                      {gymInfo.trialEndDate ? (
+                        <div className="mt-1 text-xs text-white/40">{new Date(gymInfo.trialEndDate).toLocaleDateString()}</div>
+                      ) : null}
+                    </CardContent>
+                  </Card>
+
+                  <Card className="border-white/10 bg-white/[0.04] text-white">
+                    <CardContent className="p-5">
+                      <div className="text-xs uppercase tracking-widest text-white/50">Max Members</div>
+                      <div className="mt-2 text-2xl font-bold">{gymInfo.maxMembers}</div>
+                      <div className="mt-1 text-xs text-white/40">{members.length} used</div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="border-white/10 bg-white/[0.04] text-white">
+                    <CardContent className="p-5">
+                      <div className="text-xs uppercase tracking-widest text-white/50">Max Trainers</div>
+                      <div className="mt-2 text-2xl font-bold">{gymInfo.maxTrainers}</div>
+                      <div className="mt-1 text-xs text-white/40">{coaches.length} used</div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* Gym Details */}
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <Card className="border-white/10 bg-white/[0.04] text-white">
+                    <CardHeader><CardTitle>Gym Details</CardTitle></CardHeader>
+                    <CardContent className="space-y-3 text-sm">
+                      {([
+                        ["Owner", gymInfo.ownerName],
+                        ["Owner Email", gymInfo.ownerEmail],
+                        ["Phone", gymInfo.ownerPhone ?? "—"],
+                        ["Country", gymInfo.country ?? "—"],
+                        ["City", gymInfo.city ?? "—"],
+                        ["Address", gymInfo.address ?? "—"],
+                        ["Member Since", new Date(gymInfo.createdAt).toLocaleDateString()],
+                      ] as [string, string][]).map(([label, value]) => (
+                        <div key={label} className="flex items-center justify-between border-b border-white/5 pb-2">
+                          <span className="text-white/50">{label}</span>
+                          <span className="font-medium">{value}</span>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+
+                  <Card className="border-white/10 bg-white/[0.04] text-white">
+                    <CardHeader><CardTitle>Database & Isolation</CardTitle></CardHeader>
+                    <CardContent className="space-y-3 text-sm">
+                      <div className="rounded-lg border border-white/10 bg-slate-950 p-3">
+                        <div className="text-xs text-white/50 mb-1">Tenant Database Name</div>
+                        <div className="font-mono text-emerald-300 break-all">{gymInfo.databaseName ?? "Provisioning..."}</div>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-slate-950 p-3">
+                        <div className="text-xs text-white/50 mb-1">Storage Limit</div>
+                        <div className="font-medium">{gymInfo.storageLimitGb} GB</div>
+                      </div>
+                      <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/5 p-3">
+                        <div className="text-xs text-emerald-300 font-semibold mb-1">Isolation Status</div>
+                        <div className="text-xs text-white/60">Your data is fully isolated in a dedicated MongoDB database. No other gym can access your records.</div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </>
+            ) : (
+              <Card className="border-white/10 bg-white/[0.04] text-white">
+                <CardContent className="p-8 text-center text-white/50">Loading tenant information...</CardContent>
+              </Card>
+            )}
           </section>
         ) : null}
       </main>
