@@ -35,6 +35,8 @@ import SaasPricing from "./pages/saas/Pricing";
 import SaasLogin from "./pages/saas/Login";
 import SaasDashboard from "./pages/saas/Dashboard";
 import SuperAdminDashboard from "./pages/super-admin/Dashboard";
+import MemberPortalLogin from "./pages/member-portal/Login";
+import MemberPortalDashboard from "./pages/member-portal/Dashboard";
 
 function Router() {
   return (
@@ -73,6 +75,9 @@ function Router() {
       <Route path="/saas/login" component={SaasLogin} />
       <Route path="/saas/dashboard" component={SaasDashboard} />
       <Route path="/super-admin" component={SuperAdminDashboard} />
+      {/* Member Portal Routes */}
+      <Route path="/member-portal/login" component={MemberPortalLogin} />
+      <Route path="/member-portal/dashboard" component={MemberPortalDashboard} />
       <Route component={NotFound} />
     </Switch>
   );

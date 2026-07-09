@@ -15,6 +15,7 @@ import { membershipsRouter } from "./routes/memberships.routes";
 import { paymentsRouter } from "./routes/payments.routes";
 import { reportsRouter } from "./routes/reports.routes";
 import { superAdminRouter } from "./routes/super-admin.routes";
+import { memberPortalRouter } from "./routes/member-portal.routes";
 
 export function createSaasApp() {
   const app = express();
@@ -49,6 +50,7 @@ export function createSaasApp() {
   app.use("/api/v1/payments", paymentsRouter);
   app.use("/api/v1/reports", reportsRouter);
   app.use("/api/v1/super-admin", superAdminRouter);
+  app.use("/api/v1/member-portal", memberPortalRouter);
 
   app.post("/api/v1/uploads/member-photo", upload.single("photo"), (_req, res) => {
     // Stub endpoint for Railway object storage integration.
