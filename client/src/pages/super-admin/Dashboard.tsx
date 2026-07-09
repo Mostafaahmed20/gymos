@@ -135,7 +135,9 @@ export default function SuperAdminDashboard() {
     setError("");
     setMessage("");
 
-    const data = new FormData(event.currentTarget);
+    // Capture form ref BEFORE any async operation to avoid null after re-render
+    const form = event.currentTarget;
+    const data = new FormData(form);
     const rawSlug = String(data.get("gymSlug") ?? "");
     const normalizedSlug = rawSlug
       .trim()
@@ -165,7 +167,6 @@ export default function SuperAdminDashboard() {
         }),
       });
 
-      const form = event.currentTarget;
       setMessage("Gym trial created. Admin account and isolated Mongo database are ready.");
       await loadPlatform();
       form.reset();
@@ -377,7 +378,12 @@ export default function SuperAdminDashboard() {
                     </div>
                     <div className="flex items-end xl:col-span-2">
                       <Button className="w-full bg-emerald-400 text-slate-950 hover:bg-emerald-300" disabled={creating}>
-                        {creating ? "Creating..." : "Create Trial Gym"}
+                        {creating ? (
+                          <span className="flex items-center gap-2">
+                            <RefreshCw className="h-4 w-4 animate-spin" />
+                            Creating gym &amp; provisioning database...
+                          </span>
+                        ) : "Create Trial Gym"}
                       </Button>
                     </div>
                   </form>
