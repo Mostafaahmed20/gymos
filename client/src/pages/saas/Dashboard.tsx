@@ -204,6 +204,31 @@ export default function SaasDashboard() {
     }
   }
 
+  async function createPayment(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    setError("");
+    const form = event.currentTarget;
+    const data = new FormData(form);
+
+    try {
+      await apiFetch("/payments", {
+        method: "POST",
+        body: JSON.stringify({
+          memberId: data.get("memberId") || undefined,
+          amount: Number(data.get("amount")),
+          method: data.get("method"),
+          notes: data.get("notes") || undefined,
+        }),
+      });
+      setMessage("Payment recorded successfully.");
+      await loadDashboard();
+      form.reset();
+    } catch (paymentError) {
+      setError(paymentError instanceof Error ? paymentError.message : "Could not record payment");
+    }
+  }
+
   async function checkIn(memberId: string) {
     setMessage("");
     setError("");
@@ -504,7 +529,54 @@ export default function SaasDashboard() {
         ) : null}
 
         {!loading && activeSection === "payments" ? (
-          <section className="mt-8">
+          <section className="mt-8 grid gap-5 xl:grid-cols-[380px_1fr]">
+            <Card className="border-white/10 bg-white/[0.04] text-white">
+              <CardHeader>
+                <CardTitle>Record Payment</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <form className="space-y-4" onSubmit={createPayment}>
+                  <div className="space-y-1.5">
+                    <Label>Member (optional)</Label>
+                    <select
+                      name="memberId"
+                      className="w-full rounded-md border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white"
+                    >
+                      <option value="">— General / Walk-in —</option>
+                      {members.map((m) => (
+                        <option key={m.id} value={m.id}>{m.fullName} ({m.code})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Amount ($)</Label>
+                    <Input name="amount" type="number" min="1" step="0.01" required className="border-white/10 bg-slate-950" placeholder="0.00" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Payment Method</Label>
+                    <select
+                      name="method"
+                      required
+                      className="w-full rounded-md border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white"
+                    >
+                      <option value="CASH">Cash</option>
+                      <option value="CARD">Card</option>
+                      <option value="BANK_TRANSFER">Bank Transfer</option>
+                      <option value="OTHER">Other</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Notes (optional)</Label>
+                    <Input name="notes" className="border-white/10 bg-slate-950" placeholder="e.g. Monthly membership fee" />
+                  </div>
+                  <Button className="w-full bg-emerald-400 text-slate-950 hover:bg-emerald-300">
+                    <Plus className="mr-2 h-4 w-4" />
+                    Record Payment
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
+
             <Card className="border-white/10 bg-white/[0.04] text-white">
               <CardHeader>
                 <CardTitle>Recent Payments</CardTitle>
@@ -514,12 +586,15 @@ export default function SaasDashboard() {
                   <div key={payment.id} className="flex items-center justify-between rounded-lg border border-white/10 bg-slate-950/50 p-4">
                     <div>
                       <div className="font-medium">{payment.member?.fullName ?? "General payment"}</div>
-                      <div className="text-xs text-white/55">{payment.method} · {new Date(payment.paidAt).toLocaleString()}</div>
+                      <div className="text-xs text-white/55">
+                        {payment.method} · {new Date(payment.paidAt).toLocaleString()}
+                        {payment.notes ? ` · ${payment.notes}` : ""}
+                      </div>
                     </div>
-                    <div className="text-lg font-bold">${Number(payment.amount).toLocaleString()}</div>
+                    <div className="text-lg font-bold text-emerald-300">${Number(payment.amount).toLocaleString()}</div>
                   </div>
                 ))}
-                {payments.length === 0 ? <p className="text-sm text-white/55">No payments recorded yet. Payment entry is next phase.</p> : null}
+                {payments.length === 0 ? <p className="text-sm text-white/55">No payments recorded yet. Use the form to record your first payment.</p> : null}
               </CardContent>
             </Card>
           </section>
