@@ -14,6 +14,34 @@ const updateGymSchema = z.object({
   subscriptionEnd: z.coerce.date().optional(),
 });
 
+const editGymSchema = z.object({
+  name: z.string().min(2).optional(),
+  ownerName: z.string().min(2).optional(),
+  ownerEmail: z.string().email().optional(),
+  ownerPhone: z.string().optional(),
+  country: z.string().optional(),
+  city: z.string().optional(),
+  address: z.string().optional(),
+  domain: z.string().optional(),
+  maxMembers: z.preprocess(
+    (val) => (val === "" || val === null ? undefined : val),
+    z.coerce.number().int().min(1).optional()
+  ),
+  maxTrainers: z.preprocess(
+    (val) => (val === "" || val === null ? undefined : val),
+    z.coerce.number().int().min(1).optional()
+  ),
+  storageLimitGb: z.preprocess(
+    (val) => (val === "" || val === null ? undefined : val),
+    z.coerce.number().int().min(1).optional()
+  ),
+});
+
+const renewSchema = z.object({
+  days: z.coerce.number().int().min(1).max(3650),
+  plan: z.nativeEnum(GymPlan).optional(),
+});
+
 const createGymSchema = z.object({
   gymName: z.string().min(2),
   gymSlug: z
@@ -179,6 +207,76 @@ superAdminRouter.patch("/gyms/:gymId", async (req, res, next) => {
       data: parsed,
     });
     return res.json({ gym });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// PUT /super-admin/gyms/:gymId — full edit of gym details
+superAdminRouter.put("/gyms/:gymId", async (req, res, next) => {
+  try {
+    const parsed = editGymSchema.parse(req.body);
+    const gym = await prisma.gym.findFirst({ where: { id: req.params.gymId, deletedAt: null } });
+    if (!gym) return res.status(404).json({ message: "Gym not found" });
+
+    const updated = await prisma.gym.update({
+      where: { id: req.params.gymId },
+      data: parsed,
+    });
+
+    // Also update the owner user's email if changed
+    if (parsed.ownerEmail && parsed.ownerEmail !== gym.ownerEmail) {
+      await prisma.user.updateMany({
+        where: { gymId: gym.id, deletedAt: null },
+        data: { email: parsed.ownerEmail },
+      });
+    }
+
+    return res.json({ gym: updated });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// POST /super-admin/gyms/:gymId/renew — renew or extend subscription
+superAdminRouter.post("/gyms/:gymId/renew", async (req, res, next) => {
+  try {
+    const parsed = renewSchema.parse(req.body);
+    const gym = await prisma.gym.findFirst({ where: { id: req.params.gymId, deletedAt: null } });
+    if (!gym) return res.status(404).json({ message: "Gym not found" });
+
+    // Extend from today or from current subscription end, whichever is later
+    const base = gym.subscriptionEnd && gym.subscriptionEnd > new Date() ? gym.subscriptionEnd : new Date();
+    const newEnd = new Date(base);
+    newEnd.setDate(newEnd.getDate() + parsed.days);
+
+    const updated = await prisma.gym.update({
+      where: { id: req.params.gymId },
+      data: {
+        subscriptionEnd: newEnd,
+        status: GymStatus.ACTIVE,
+        ...(parsed.plan ? { plan: parsed.plan } : {}),
+      },
+    });
+
+    return res.json({ gym: updated, renewedUntil: newEnd });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// DELETE /super-admin/gyms/:gymId — soft delete a gym
+superAdminRouter.delete("/gyms/:gymId", async (req, res, next) => {
+  try {
+    const gym = await prisma.gym.findFirst({ where: { id: req.params.gymId, deletedAt: null } });
+    if (!gym) return res.status(404).json({ message: "Gym not found" });
+
+    await prisma.$transaction([
+      prisma.gym.update({ where: { id: gym.id }, data: { deletedAt: new Date(), status: GymStatus.CANCELLED } }),
+      prisma.user.updateMany({ where: { gymId: gym.id, deletedAt: null }, data: { deletedAt: new Date(), isActive: false } }),
+    ]);
+
+    return res.json({ message: `Gym "${gym.name}" has been deleted.` });
   } catch (error) {
     return next(error);
   }
