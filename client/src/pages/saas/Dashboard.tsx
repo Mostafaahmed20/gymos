@@ -51,6 +51,7 @@ type Payment = {
   amount: string | number;
   method: string;
   paidAt: string;
+  notes?: string | null;
   member?: { fullName: string; code: string } | null;
 };
 

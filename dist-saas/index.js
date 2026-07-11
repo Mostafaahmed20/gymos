@@ -12,6 +12,9 @@ var SAAS_CONFIG = {
   port: toNumber(process.env.SAAS_PORT, 4e3),
   appBaseDomain: process.env.APP_BASE_DOMAIN ?? "platform.com",
   databaseUrl: process.env.DATABASE_URL ?? "",
+  mongoTenantUri: process.env.SAAS_MONGODB_URI ?? process.env.MONGODB_URI ?? "",
+  mongoPlatformDatabase: process.env.SAAS_PLATFORM_DB ?? "gymos_platform",
+  mongoTenantDatabasePrefix: process.env.SAAS_TENANT_DB_PREFIX ?? "gymos",
   jwtAccessSecret: process.env.JWT_ACCESS_SECRET ?? "change-me-access-secret",
   jwtRefreshSecret: process.env.JWT_REFRESH_SECRET ?? "change-me-refresh-secret",
   accessTokenMinutes: toNumber(process.env.JWT_ACCESS_MINUTES, 30),
@@ -130,6 +133,137 @@ if (process.env.NODE_ENV !== "production") {
   prismaGlobal.saasPrisma = prisma;
 }
 
+// server/saas/services/tenant-database.ts
+import { MongoClient } from "mongodb";
+var mongoClientPromise = null;
+function assertMongoConfigured() {
+  if (!SAAS_CONFIG.mongoTenantUri) {
+    throw new Error("SAAS_MONGODB_URI or MONGODB_URI is required for tenant databases");
+  }
+}
+function getMongoClient() {
+  assertMongoConfigured();
+  if (!mongoClientPromise) {
+    const client = new MongoClient(SAAS_CONFIG.mongoTenantUri, {
+      maxPoolSize: 50,
+      minPoolSize: 0
+    });
+    mongoClientPromise = client.connect();
+  }
+  return mongoClientPromise;
+}
+function normalizeDatabasePart(value) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+}
+function tenantDatabaseName(tenant) {
+  const slug = normalizeDatabasePart(tenant.slug) || "gym";
+  const idPart = normalizeDatabasePart(tenant.id).slice(0, 10);
+  return `${SAAS_CONFIG.mongoTenantDatabasePrefix}_${slug}_${idPart}_db`;
+}
+async function getTenantDatabase(tenant) {
+  const client = await getMongoClient();
+  return client.db(tenantDatabaseName(tenant));
+}
+async function bootstrapTenantDatabase(tenant) {
+  const db = await getTenantDatabase(tenant);
+  const now = /* @__PURE__ */ new Date();
+  await Promise.all([
+    db.collection("members").createIndex({ email: 1 }, { sparse: true }),
+    db.collection("members").createIndex({ phone: 1 }, { sparse: true }),
+    db.collection("trainers").createIndex({ email: 1 }, { sparse: true }),
+    db.collection("attendance").createIndex({ memberId: 1, checkInAt: -1 }),
+    db.collection("payments").createIndex({ memberId: 1, paidAt: -1 }),
+    db.collection("orders").createIndex({ memberId: 1, createdAt: -1 }),
+    db.collection("notifications").createIndex({ memberId: 1, createdAt: -1 }),
+    db.collection("workoutPlans").createIndex({ memberId: 1, createdAt: -1 }),
+    db.collection("progress").createIndex({ memberId: 1, measuredAt: -1 })
+  ]);
+  await db.collection("settings").updateOne(
+    { key: "gymDefaults" },
+    {
+      $setOnInsert: {
+        key: "gymDefaults",
+        value: {
+          timezone: "UTC",
+          currency: "USD",
+          attendanceMethod: "manual"
+        },
+        createdAt: now
+      },
+      $set: { updatedAt: now }
+    },
+    { upsert: true }
+  );
+  await db.collection("categories").updateOne(
+    { key: "defaultMemberCategories" },
+    {
+      $setOnInsert: {
+        key: "defaultMemberCategories",
+        values: ["General", "Personal Training", "VIP"],
+        createdAt: now
+      },
+      $set: { updatedAt: now }
+    },
+    { upsert: true }
+  );
+  return {
+    databaseName: db.databaseName
+  };
+}
+
+// server/saas/services/tenant-policy.ts
+import { GymPlan, SubscriptionStatus } from "@prisma/client";
+function isGymLicenseActive(gym) {
+  const now = /* @__PURE__ */ new Date();
+  if (!["ACTIVE", "TRIAL"].includes(gym.status)) return false;
+  if (gym.trialEndDate >= now) return true;
+  if (gym.subscriptionEnd && gym.subscriptionEnd >= now) return true;
+  return false;
+}
+async function enforceMemberLimit(gymId) {
+  const gym = await prisma.gym.findFirst({
+    where: { id: gymId, deletedAt: null },
+    select: { plan: true }
+  });
+  if (!gym) return { allowed: false, reason: "Gym not found" };
+  if (gym.plan !== GymPlan.BASIC) return { allowed: true };
+  const membersCount = await prisma.member.count({
+    where: { gymId, deletedAt: null }
+  });
+  if (membersCount >= SAAS_CONFIG.basicMemberLimit) {
+    return {
+      allowed: false,
+      reason: `Basic plan member limit reached (${SAAS_CONFIG.basicMemberLimit})`
+    };
+  }
+  return { allowed: true };
+}
+async function upsertGymSubscription(gymId, plan, endDate) {
+  const existing = await prisma.subscription.findFirst({
+    where: { gymId, deletedAt: null },
+    orderBy: { createdAt: "desc" }
+  });
+  if (existing) {
+    return prisma.subscription.update({
+      where: { id: existing.id },
+      data: {
+        plan,
+        status: SubscriptionStatus.ACTIVE,
+        endDate
+      }
+    });
+  }
+  return prisma.subscription.create({
+    data: {
+      gymId,
+      plan,
+      status: SubscriptionStatus.ACTIVE,
+      startDate: /* @__PURE__ */ new Date(),
+      endDate
+    }
+  });
+}
+
 // server/saas/middleware/tenant.ts
 function extractSlugFromHost(host) {
   if (!host) return null;
@@ -142,39 +276,63 @@ function extractSlugFromHost(host) {
   return slug;
 }
 async function resolveTenant(req, res, next) {
-  const headerGymId = req.header("x-gym-id");
-  const headerGymSlug = req.header("x-gym-slug");
-  const hostSlug = extractSlugFromHost(req.header("host"));
-  if (req.authUser?.role === "SUPER_ADMIN") {
-    if (headerGymId) {
+  try {
+    const headerGymId = req.header("x-gym-id");
+    const headerGymSlug = req.header("x-gym-slug");
+    const hostSlug = extractSlugFromHost(req.header("host"));
+    if (req.authUser?.role === "SUPER_ADMIN") {
+      if (headerGymId) {
+        req.gymId = headerGymId;
+      } else if (headerGymSlug || hostSlug) {
+        const slug = headerGymSlug ?? hostSlug;
+        const gym2 = await prisma.gym.findFirst({
+          where: { slug, deletedAt: null },
+          select: { id: true }
+        });
+        req.gymId = gym2?.id;
+      }
+    } else if (req.authUser?.gymId) {
+      req.gymId = req.authUser.gymId;
+    } else if (headerGymId) {
       req.gymId = headerGymId;
     } else if (headerGymSlug || hostSlug) {
       const slug = headerGymSlug ?? hostSlug;
-      const gym = await prisma.gym.findFirst({
+      const gym2 = await prisma.gym.findFirst({
         where: { slug, deletedAt: null },
         select: { id: true }
       });
-      req.gymId = gym?.id;
+      req.gymId = gym2?.id;
     }
-  } else if (req.authUser?.gymId) {
-    req.gymId = req.authUser.gymId;
-  } else if (headerGymId) {
-    req.gymId = headerGymId;
-  } else if (headerGymSlug || hostSlug) {
-    const slug = headerGymSlug ?? hostSlug;
+    if (!req.gymId) {
+      return res.status(400).json({ message: "Gym context is required" });
+    }
+    if (req.authUser?.gymId && req.authUser.gymId !== req.gymId) {
+      return res.status(403).json({ message: "Cross-tenant access denied" });
+    }
     const gym = await prisma.gym.findFirst({
-      where: { slug, deletedAt: null },
-      select: { id: true }
+      where: { id: req.gymId, deletedAt: null },
+      select: {
+        id: true,
+        slug: true,
+        status: true,
+        trialEndDate: true,
+        subscriptionEnd: true
+      }
     });
-    req.gymId = gym?.id;
+    if (!gym) {
+      return res.status(404).json({ message: "Gym not found" });
+    }
+    if (req.authUser?.role !== "SUPER_ADMIN" && !isGymLicenseActive(gym)) {
+      return res.status(402).json({
+        message: "Your subscription has expired. Please renew your subscription."
+      });
+    }
+    req.tenantDatabaseName = tenantDatabaseName(gym);
+    req.tenantDatabase = await getTenantDatabase(gym);
+    return next();
+  } catch (error) {
+    return next(error);
   }
-  if (!req.gymId) {
-    return res.status(400).json({ message: "Gym context is required" });
-  }
-  if (req.authUser?.gymId && req.authUser.gymId !== req.gymId) {
-    return res.status(403).json({ message: "Cross-tenant access denied" });
-  }
-  return next();
 }
 
 // server/saas/routes/attendance.routes.ts
@@ -275,7 +433,7 @@ attendanceRouter.post(
 );
 
 // server/saas/routes/auth.routes.ts
-import { GymPlan, UserRole as UserRole2 } from "@prisma/client";
+import { GymPlan as GymPlan2, GymStatus, UserRole as UserRole2 } from "@prisma/client";
 import { Router as Router2 } from "express";
 import { z as z2 } from "zod";
 
@@ -295,7 +453,7 @@ var registerOwnerSchema = z2.object({
   fullName: z2.string().min(2),
   email: z2.string().email(),
   password: z2.string().min(8),
-  plan: z2.nativeEnum(GymPlan).optional()
+  plan: z2.nativeEnum(GymPlan2).optional()
 });
 var loginSchema = z2.object({
   email: z2.string().email(),
@@ -327,10 +485,21 @@ authRouter.post("/register-owner", async (req, res, next) => {
       data: {
         slug: parsed.gymSlug,
         name: parsed.gymName,
-        plan: parsed.plan ?? GymPlan.BASIC,
+        ownerName: parsed.fullName,
+        ownerEmail: parsed.email,
+        plan: parsed.plan ?? GymPlan2.TRIAL,
+        status: GymStatus.TRIAL,
         trialStartDate,
         trialEndDate
       }
+    });
+    const tenantDatabase = await bootstrapTenantDatabase({
+      id: gym.id,
+      slug: gym.slug
+    });
+    await prisma.gym.update({
+      where: { id: gym.id },
+      data: { databaseName: tenantDatabase.databaseName }
     });
     const owner = await prisma.user.create({
       data: {
@@ -358,7 +527,13 @@ authRouter.post("/register-owner", async (req, res, next) => {
     });
     return res.status(201).json({
       message: "Gym owner registered successfully",
-      gym: { id: gym.id, slug: gym.slug, name: gym.name, plan: gym.plan },
+      gym: {
+        id: gym.id,
+        slug: gym.slug,
+        name: gym.name,
+        plan: gym.plan,
+        databaseName: tenantDatabase.databaseName
+      },
       user: { id: owner.id, fullName: owner.fullName, email: owner.email, role: owner.role },
       tokens: { accessToken, refreshToken }
     });
@@ -387,6 +562,21 @@ authRouter.post("/login", async (req, res, next) => {
     if (!user) return res.status(401).json({ message: "Invalid credentials" });
     const validPassword = await verifyPassword(parsed.password, user.passwordHash);
     if (!validPassword) return res.status(401).json({ message: "Invalid credentials" });
+    if (user.role !== UserRole2.SUPER_ADMIN && user.gymId) {
+      const gym = await prisma.gym.findFirst({
+        where: { id: user.gymId, deletedAt: null },
+        select: {
+          status: true,
+          trialEndDate: true,
+          subscriptionEnd: true
+        }
+      });
+      if (!gym || !isGymLicenseActive(gym)) {
+        return res.status(402).json({
+          message: "Your subscription has expired. Please renew your subscription."
+        });
+      }
+    }
     const accessToken = createAccessToken({
       sub: user.id,
       gymId: user.gymId ?? null,
@@ -562,57 +752,9 @@ dashboardRouter.get("/stats", async (req, res) => {
 });
 
 // server/saas/routes/gym.routes.ts
-import { GymPlan as GymPlan3, GymStatus, UserRole as UserRole4 } from "@prisma/client";
+import { GymPlan as GymPlan3, GymStatus as GymStatus2, UserRole as UserRole4 } from "@prisma/client";
 import { Router as Router5 } from "express";
 import { z as z4 } from "zod";
-
-// server/saas/services/tenant-policy.ts
-import { GymPlan as GymPlan2, SubscriptionStatus } from "@prisma/client";
-async function enforceMemberLimit(gymId) {
-  const gym = await prisma.gym.findFirst({
-    where: { id: gymId, deletedAt: null },
-    select: { plan: true }
-  });
-  if (!gym) return { allowed: false, reason: "Gym not found" };
-  if (gym.plan !== GymPlan2.BASIC) return { allowed: true };
-  const membersCount = await prisma.member.count({
-    where: { gymId, deletedAt: null }
-  });
-  if (membersCount >= SAAS_CONFIG.basicMemberLimit) {
-    return {
-      allowed: false,
-      reason: `Basic plan member limit reached (${SAAS_CONFIG.basicMemberLimit})`
-    };
-  }
-  return { allowed: true };
-}
-async function upsertGymSubscription(gymId, plan, endDate) {
-  const existing = await prisma.subscription.findFirst({
-    where: { gymId, deletedAt: null },
-    orderBy: { createdAt: "desc" }
-  });
-  if (existing) {
-    return prisma.subscription.update({
-      where: { id: existing.id },
-      data: {
-        plan,
-        status: SubscriptionStatus.ACTIVE,
-        endDate
-      }
-    });
-  }
-  return prisma.subscription.create({
-    data: {
-      gymId,
-      plan,
-      status: SubscriptionStatus.ACTIVE,
-      startDate: /* @__PURE__ */ new Date(),
-      endDate
-    }
-  });
-}
-
-// server/saas/routes/gym.routes.ts
 var updateGymSchema = z4.object({
   name: z4.string().min(2).optional(),
   logoUrl: z4.string().url().optional().nullable(),
@@ -622,7 +764,7 @@ var updateGymSchema = z4.object({
 });
 var updateSubscriptionSchema = z4.object({
   plan: z4.nativeEnum(GymPlan3),
-  status: z4.nativeEnum(GymStatus).optional(),
+  status: z4.nativeEnum(GymStatus2).optional(),
   endDate: z4.coerce.date()
 });
 var gymRouter = Router5();
@@ -667,7 +809,7 @@ gymRouter.patch(
         where: { id: req.gymId },
         data: {
           plan: parsed.plan,
-          status: parsed.status ?? GymStatus.ACTIVE,
+          status: parsed.status ?? GymStatus2.ACTIVE,
           subscriptionEnd: parsed.endDate
         }
       });
@@ -1014,16 +1156,165 @@ reportsRouter.get("/revenue", async (req, res, next) => {
 });
 
 // server/saas/routes/super-admin.routes.ts
-import { GymPlan as GymPlan4, GymStatus as GymStatus2, UserRole as UserRole8 } from "@prisma/client";
+import { GymPlan as GymPlan4, GymStatus as GymStatus3, UserRole as UserRole8 } from "@prisma/client";
 import { Router as Router10 } from "express";
 import { z as z9 } from "zod";
 var updateGymSchema2 = z9.object({
-  status: z9.nativeEnum(GymStatus2).optional(),
+  status: z9.nativeEnum(GymStatus3).optional(),
   plan: z9.nativeEnum(GymPlan4).optional(),
   subscriptionEnd: z9.coerce.date().optional()
 });
+var editGymSchema = z9.object({
+  name: z9.string().min(2).optional(),
+  ownerName: z9.string().min(2).optional(),
+  ownerEmail: z9.string().email().optional(),
+  ownerPhone: z9.string().optional(),
+  country: z9.string().optional(),
+  city: z9.string().optional(),
+  address: z9.string().optional(),
+  domain: z9.string().optional(),
+  maxMembers: z9.preprocess(
+    (val) => val === "" || val === null ? void 0 : val,
+    z9.coerce.number().int().min(1).optional()
+  ),
+  maxTrainers: z9.preprocess(
+    (val) => val === "" || val === null ? void 0 : val,
+    z9.coerce.number().int().min(1).optional()
+  ),
+  storageLimitGb: z9.preprocess(
+    (val) => val === "" || val === null ? void 0 : val,
+    z9.coerce.number().int().min(1).optional()
+  )
+});
+var renewSchema = z9.object({
+  days: z9.coerce.number().int().min(1).max(3650),
+  plan: z9.nativeEnum(GymPlan4).optional()
+});
+var createGymSchema = z9.object({
+  gymName: z9.string().min(2),
+  gymSlug: z9.string().min(2).transform(
+    (value) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+  ).pipe(z9.string().min(2).regex(/^[a-z0-9-]+$/)),
+  ownerName: z9.string().min(2),
+  ownerEmail: z9.string().email(),
+  ownerPhone: z9.string().optional(),
+  adminPassword: z9.string().min(8),
+  country: z9.string().optional(),
+  city: z9.string().optional(),
+  address: z9.string().optional(),
+  domain: z9.string().optional(),
+  plan: z9.nativeEnum(GymPlan4).catch(GymPlan4.TRIAL).default(GymPlan4.TRIAL),
+  trialDays: z9.preprocess(
+    (val) => val === "" || val === null ? void 0 : val,
+    z9.coerce.number().int().min(1).max(365).default(SAAS_CONFIG.trialDays)
+  ),
+  maxMembers: z9.preprocess(
+    (val) => val === "" || val === null ? void 0 : val,
+    z9.coerce.number().int().min(1).optional()
+  ),
+  maxTrainers: z9.preprocess(
+    (val) => val === "" || val === null ? void 0 : val,
+    z9.coerce.number().int().min(1).optional()
+  ),
+  storageLimitGb: z9.preprocess(
+    (val) => val === "" || val === null ? void 0 : val,
+    z9.coerce.number().int().min(1).optional()
+  )
+});
+function addDays2(days) {
+  const date = /* @__PURE__ */ new Date();
+  date.setDate(date.getDate() + days);
+  return date;
+}
 var superAdminRouter = Router10();
 superAdminRouter.use(requireAuth, requireRoles(UserRole8.SUPER_ADMIN));
+superAdminRouter.post("/gyms", async (req, res, next) => {
+  let createdGymId = null;
+  try {
+    const parsed = createGymSchema.parse(req.body);
+    const existingGym = await prisma.gym.findUnique({ where: { slug: parsed.gymSlug } });
+    if (existingGym) return res.status(409).json({ message: "Gym slug already exists" });
+    const existingOwner = await prisma.user.findFirst({
+      where: {
+        email: parsed.ownerEmail,
+        deletedAt: null
+      }
+    });
+    if (existingOwner) return res.status(409).json({ message: "Owner email already exists" });
+    const trialStartDate = /* @__PURE__ */ new Date();
+    const trialEndDate = addDays2(parsed.trialDays);
+    const passwordHash = await hashPassword(parsed.adminPassword);
+    const gym = await prisma.gym.create({
+      data: {
+        slug: parsed.gymSlug,
+        name: parsed.gymName,
+        ownerName: parsed.ownerName,
+        ownerEmail: parsed.ownerEmail,
+        ownerPhone: parsed.ownerPhone,
+        country: parsed.country,
+        city: parsed.city,
+        address: parsed.address,
+        domain: parsed.domain,
+        subdomain: `${parsed.gymSlug}.${SAAS_CONFIG.appBaseDomain}`,
+        plan: parsed.plan,
+        status: GymStatus3.TRIAL,
+        trialStartDate,
+        trialEndDate,
+        maxMembers: parsed.maxMembers,
+        maxTrainers: parsed.maxTrainers,
+        storageLimitGb: parsed.storageLimitGb
+      }
+    });
+    createdGymId = gym.id;
+    const tenantDatabase = await bootstrapTenantDatabase({
+      id: gym.id,
+      slug: gym.slug
+    });
+    const [updatedGym, owner] = await prisma.$transaction([
+      prisma.gym.update({
+        where: { id: gym.id },
+        data: { databaseName: tenantDatabase.databaseName }
+      }),
+      prisma.user.create({
+        data: {
+          gymId: gym.id,
+          fullName: parsed.ownerName,
+          email: parsed.ownerEmail,
+          passwordHash,
+          role: UserRole8.OWNER
+        }
+      }),
+      prisma.subscription.create({
+        data: {
+          gymId: gym.id,
+          plan: parsed.plan,
+          status: "ACTIVE",
+          startDate: trialStartDate,
+          endDate: trialEndDate
+        }
+      })
+    ]);
+    return res.status(201).json({
+      message: "Gym created with isolated database and trial admin account",
+      gym: updatedGym,
+      owner: {
+        id: owner.id,
+        fullName: owner.fullName,
+        email: owner.email,
+        role: owner.role
+      },
+      trial: {
+        startDate: trialStartDate,
+        endDate: trialEndDate
+      }
+    });
+  } catch (error) {
+    if (createdGymId) {
+      await prisma.gym.delete({ where: { id: createdGymId } }).catch(() => void 0);
+    }
+    return next(error);
+  }
+});
 superAdminRouter.get("/gyms", async (_req, res) => {
   const gyms = await prisma.gym.findMany({
     where: { deletedAt: null },
@@ -1048,10 +1339,64 @@ superAdminRouter.patch("/gyms/:gymId", async (req, res, next) => {
     return next(error);
   }
 });
+superAdminRouter.put("/gyms/:gymId", async (req, res, next) => {
+  try {
+    const parsed = editGymSchema.parse(req.body);
+    const gym = await prisma.gym.findFirst({ where: { id: req.params.gymId, deletedAt: null } });
+    if (!gym) return res.status(404).json({ message: "Gym not found" });
+    const updated = await prisma.gym.update({
+      where: { id: req.params.gymId },
+      data: parsed
+    });
+    if (parsed.ownerEmail && parsed.ownerEmail !== gym.ownerEmail) {
+      await prisma.user.updateMany({
+        where: { gymId: gym.id, deletedAt: null },
+        data: { email: parsed.ownerEmail }
+      });
+    }
+    return res.json({ gym: updated });
+  } catch (error) {
+    return next(error);
+  }
+});
+superAdminRouter.post("/gyms/:gymId/renew", async (req, res, next) => {
+  try {
+    const parsed = renewSchema.parse(req.body);
+    const gym = await prisma.gym.findFirst({ where: { id: req.params.gymId, deletedAt: null } });
+    if (!gym) return res.status(404).json({ message: "Gym not found" });
+    const base = gym.subscriptionEnd && gym.subscriptionEnd > /* @__PURE__ */ new Date() ? gym.subscriptionEnd : /* @__PURE__ */ new Date();
+    const newEnd = new Date(base);
+    newEnd.setDate(newEnd.getDate() + parsed.days);
+    const updated = await prisma.gym.update({
+      where: { id: req.params.gymId },
+      data: {
+        subscriptionEnd: newEnd,
+        status: GymStatus3.ACTIVE,
+        ...parsed.plan ? { plan: parsed.plan } : {}
+      }
+    });
+    return res.json({ gym: updated, renewedUntil: newEnd });
+  } catch (error) {
+    return next(error);
+  }
+});
+superAdminRouter.delete("/gyms/:gymId", async (req, res, next) => {
+  try {
+    const gym = await prisma.gym.findFirst({ where: { id: req.params.gymId, deletedAt: null } });
+    if (!gym) return res.status(404).json({ message: "Gym not found" });
+    await prisma.$transaction([
+      prisma.gym.update({ where: { id: gym.id }, data: { deletedAt: /* @__PURE__ */ new Date(), status: GymStatus3.CANCELLED } }),
+      prisma.user.updateMany({ where: { gymId: gym.id, deletedAt: null }, data: { deletedAt: /* @__PURE__ */ new Date(), isActive: false } })
+    ]);
+    return res.json({ message: `Gym "${gym.name}" has been deleted.` });
+  } catch (error) {
+    return next(error);
+  }
+});
 superAdminRouter.get("/analytics", async (_req, res) => {
   const [totalGyms, activeGyms, totalMembers, revenueAgg] = await Promise.all([
     prisma.gym.count({ where: { deletedAt: null } }),
-    prisma.gym.count({ where: { deletedAt: null, status: GymStatus2.ACTIVE } }),
+    prisma.gym.count({ where: { deletedAt: null, status: GymStatus3.ACTIVE } }),
     prisma.member.count({ where: { deletedAt: null } }),
     prisma.payment.aggregate({ where: { deletedAt: null }, _sum: { amount: true } })
   ]);
@@ -1061,6 +1406,119 @@ superAdminRouter.get("/analytics", async (_req, res) => {
     totalMembers,
     totalRevenue: Number(revenueAgg._sum.amount ?? 0)
   });
+});
+
+// server/saas/routes/member-portal.routes.ts
+import { Router as Router11 } from "express";
+import { z as z10 } from "zod";
+var memberLoginSchema = z10.object({
+  gymSlug: z10.string().min(2),
+  identifier: z10.string().min(1)
+  // member code (MBR-XXXXXX) or email
+});
+var memberPortalRouter = Router11();
+memberPortalRouter.post("/login", async (req, res, next) => {
+  try {
+    const parsed = memberLoginSchema.parse(req.body);
+    const gym = await prisma.gym.findUnique({ where: { slug: parsed.gymSlug } });
+    if (!gym || gym.deletedAt) {
+      return res.status(404).json({ message: "Gym not found" });
+    }
+    const isCode = parsed.identifier.toUpperCase().startsWith("MBR-");
+    const member = await prisma.member.findFirst({
+      where: {
+        gymId: gym.id,
+        deletedAt: null,
+        ...isCode ? { code: parsed.identifier.toUpperCase() } : { email: parsed.identifier.toLowerCase() }
+      }
+    });
+    if (!member) {
+      return res.status(404).json({ message: "Member not found. Check your member code or email." });
+    }
+    return res.json({
+      message: "Login successful",
+      member: {
+        id: member.id,
+        code: member.code,
+        fullName: member.fullName,
+        email: member.email,
+        phone: member.phone,
+        gender: member.gender,
+        dateOfBirth: member.dateOfBirth,
+        notes: member.notes,
+        createdAt: member.createdAt
+      },
+      gym: {
+        id: gym.id,
+        slug: gym.slug,
+        name: gym.name
+      }
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+memberPortalRouter.get("/:gymSlug/:memberId/profile", async (req, res) => {
+  const gym = await prisma.gym.findUnique({ where: { slug: req.params.gymSlug } });
+  if (!gym) return res.status(404).json({ message: "Gym not found" });
+  const member = await prisma.member.findFirst({
+    where: { id: req.params.memberId, gymId: gym.id, deletedAt: null }
+  });
+  if (!member) return res.status(404).json({ message: "Member not found" });
+  return res.json({ member, gym: { name: gym.name, slug: gym.slug } });
+});
+memberPortalRouter.get("/:gymSlug/:memberId/memberships", async (req, res) => {
+  const gym = await prisma.gym.findUnique({ where: { slug: req.params.gymSlug } });
+  if (!gym) return res.status(404).json({ message: "Gym not found" });
+  const member = await prisma.member.findFirst({
+    where: { id: req.params.memberId, gymId: gym.id, deletedAt: null },
+    select: { id: true }
+  });
+  if (!member) return res.status(404).json({ message: "Member not found" });
+  const memberships = await prisma.membership.findMany({
+    where: { memberId: req.params.memberId, gymId: gym.id, deletedAt: null },
+    orderBy: { createdAt: "desc" }
+  });
+  return res.json({ data: memberships });
+});
+memberPortalRouter.get("/:gymSlug/:memberId/attendance", async (req, res) => {
+  const gym = await prisma.gym.findUnique({ where: { slug: req.params.gymSlug } });
+  if (!gym) return res.status(404).json({ message: "Gym not found" });
+  const member = await prisma.member.findFirst({
+    where: { id: req.params.memberId, gymId: gym.id, deletedAt: null },
+    select: { id: true }
+  });
+  if (!member) return res.status(404).json({ message: "Member not found" });
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = Math.min(50, Number(req.query.pageSize) || 20);
+  const skip = (page - 1) * pageSize;
+  const [items, total] = await Promise.all([
+    prisma.attendance.findMany({
+      where: { memberId: req.params.memberId, gymId: gym.id, deletedAt: null },
+      orderBy: { checkInAt: "desc" },
+      skip,
+      take: pageSize
+    }),
+    prisma.attendance.count({
+      where: { memberId: req.params.memberId, gymId: gym.id, deletedAt: null }
+    })
+  ]);
+  return res.json({ data: items, pagination: { page, pageSize, total } });
+});
+memberPortalRouter.get("/:gymSlug/:memberId/payments", async (req, res) => {
+  const gym = await prisma.gym.findUnique({ where: { slug: req.params.gymSlug } });
+  if (!gym) return res.status(404).json({ message: "Gym not found" });
+  const member = await prisma.member.findFirst({
+    where: { id: req.params.memberId, gymId: gym.id, deletedAt: null },
+    select: { id: true }
+  });
+  if (!member) return res.status(404).json({ message: "Member not found" });
+  const payments = await prisma.payment.findMany({
+    where: { memberId: req.params.memberId, gymId: gym.id, deletedAt: null },
+    orderBy: { paidAt: "desc" },
+    take: 50
+  });
+  return res.json({ data: payments });
 });
 
 // server/saas/app.ts
@@ -1094,6 +1552,7 @@ function createSaasApp() {
   app.use("/api/v1/payments", paymentsRouter);
   app.use("/api/v1/reports", reportsRouter);
   app.use("/api/v1/super-admin", superAdminRouter);
+  app.use("/api/v1/member-portal", memberPortalRouter);
   app.post("/api/v1/uploads/member-photo", upload.single("photo"), (_req, res) => {
     res.status(501).json({ message: "Upload storage integration not configured yet." });
   });
