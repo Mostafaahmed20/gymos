@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SAAS_API_BASE } from "@/lib/saas-api";
 import { useState } from "react";
 import { Link } from "wouter";
 
@@ -17,7 +18,7 @@ export default function SaasLogin() {
     setLoading(true);
 
     try {
-      const response = await fetch("https://4000-ip7j6bqy2pdjp23wy2koy-648bfd36.sg1.manus.computer/api/v1/auth/login", {
+      const response = await fetch(`${SAAS_API_BASE}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

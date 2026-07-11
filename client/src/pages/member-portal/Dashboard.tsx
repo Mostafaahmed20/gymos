@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { SAAS_API_BASE } from "@/lib/saas-api";
 import {
   CalendarCheck2,
   CreditCard,
@@ -11,7 +12,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
-const API_BASE = "https://4000-ip7j6bqy2pdjp23wy2koy-648bfd36.sg1.manus.computer/api/v1";
+const API_BASE = SAAS_API_BASE;
 
 type MemberSession = {
   id: string;
