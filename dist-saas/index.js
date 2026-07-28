@@ -30,32 +30,14 @@ var isSaasConfigValid = Boolean(
 
 // server/saas/app.ts
 import cors from "cors";
+import crypto2 from "crypto";
 import express from "express";
+import fs from "fs";
 import helmet from "helmet";
 import multer from "multer";
+import path from "path";
+import { UserRole as UserRole9 } from "@prisma/client";
 import { ZodError } from "zod";
-
-// server/saas/middleware/rate-limit.ts
-import { rateLimit } from "express-rate-limit";
-var authRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1e3,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message: "Too many authentication attempts, try again later." }
-});
-var apiRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1e3,
-  max: 1e3,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message: "Too many requests, slow down." }
-});
-
-// server/saas/routes/attendance.routes.ts
-import { AttendanceMethod, UserRole } from "@prisma/client";
-import { Router } from "express";
-import { z } from "zod";
 
 // server/saas/utils/tokens.ts
 import crypto from "node:crypto";
@@ -110,6 +92,23 @@ function requireAuth(req, res, next) {
     return res.status(401).json({ message: "Invalid token" });
   }
 }
+
+// server/saas/middleware/rate-limit.ts
+import { rateLimit } from "express-rate-limit";
+var authRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1e3,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many authentication attempts, try again later." }
+});
+var apiRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1e3,
+  max: 1e3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many requests, slow down." }
+});
 
 // server/saas/middleware/roles.ts
 function requireRoles(...roles) {
@@ -336,6 +335,9 @@ async function resolveTenant(req, res, next) {
 }
 
 // server/saas/routes/attendance.routes.ts
+import { AttendanceMethod, UserRole } from "@prisma/client";
+import { Router } from "express";
+import { z } from "zod";
 var checkInSchema = z.object({
   memberId: z.string().min(1),
   method: z.nativeEnum(AttendanceMethod).default(AttendanceMethod.MANUAL)
@@ -829,10 +831,27 @@ var createMemberSchema = z5.object({
   fullName: z5.string().min(2),
   email: z5.string().email().optional(),
   phone: z5.string().optional(),
+  photoUrl: z5.string().optional(),
+  nationalId: z5.string().optional(),
+  heightCm: z5.preprocess(
+    (val) => val === "" || val === null ? void 0 : val,
+    z5.coerce.number().positive().optional()
+  ),
+  weightKg: z5.preprocess(
+    (val) => val === "" || val === null ? void 0 : val,
+    z5.coerce.number().positive().optional()
+  ),
+  bloodType: z5.string().optional(),
+  occupation: z5.string().optional(),
+  address: z5.string().optional(),
   emergencyContact: z5.string().optional(),
   emergencyPhone: z5.string().optional(),
-  dateOfBirth: z5.coerce.date().optional(),
+  dateOfBirth: z5.preprocess(
+    (val) => val === "" || val === null ? void 0 : val,
+    z5.coerce.date().optional()
+  ),
   gender: z5.string().optional(),
+  medicalNotes: z5.string().optional(),
   notes: z5.string().optional()
 });
 var updateMemberSchema = createMemberSchema.partial();
@@ -858,7 +877,8 @@ membersRouter.get("/", async (req, res, next) => {
         OR: [
           { fullName: { contains: parsed.search, mode: "insensitive" } },
           { email: { contains: parsed.search, mode: "insensitive" } },
-          { phone: { contains: parsed.search, mode: "insensitive" } }
+          { phone: { contains: parsed.search, mode: "insensitive" } },
+          { nationalId: { contains: parsed.search, mode: "insensitive" } }
         ]
       } : {}
     };
@@ -1040,14 +1060,19 @@ membershipsRouter.patch(
 );
 
 // server/saas/routes/payments.routes.ts
-import { PaymentMethod, UserRole as UserRole7 } from "@prisma/client";
+import { PaymentMethod, SubscriptionStatus as SubscriptionStatus3, UserRole as UserRole7 } from "@prisma/client";
 import { Router as Router8 } from "express";
 import { z as z7 } from "zod";
 var paymentSchema = z7.object({
   memberId: z7.string().optional(),
   amount: z7.coerce.number().positive(),
   method: z7.nativeEnum(PaymentMethod),
-  notes: z7.string().optional()
+  notes: z7.string().optional(),
+  membership: z7.object({
+    planName: z7.string().min(1),
+    startDate: z7.coerce.date(),
+    endDate: z7.coerce.date()
+  }).optional()
 });
 var listSchema2 = z7.object({
   page: z7.coerce.number().int().min(1).default(1),
@@ -1100,16 +1125,36 @@ paymentsRouter.post(
         });
         if (!member) return res.status(404).json({ message: "Member not found" });
       }
-      const payment = await prisma.payment.create({
-        data: {
-          gymId: req.gymId,
-          memberId: parsed.memberId,
-          amount: parsed.amount,
-          method: parsed.method,
-          notes: parsed.notes
-        }
+      if (parsed.membership && !parsed.memberId) {
+        return res.status(400).json({ message: "Member is required to create a membership." });
+      }
+      if (parsed.membership && parsed.membership.endDate <= parsed.membership.startDate) {
+        return res.status(400).json({ message: "Membership end date must be after start date." });
+      }
+      const result = await prisma.$transaction(async (tx) => {
+        const payment = await tx.payment.create({
+          data: {
+            gymId: req.gymId,
+            memberId: parsed.memberId,
+            amount: parsed.amount,
+            method: parsed.method,
+            notes: parsed.notes
+          }
+        });
+        const membership = parsed.membership ? await tx.membership.create({
+          data: {
+            gymId: req.gymId,
+            memberId: parsed.memberId,
+            planName: parsed.membership.planName,
+            startDate: parsed.membership.startDate,
+            endDate: parsed.membership.endDate,
+            price: parsed.amount,
+            status: SubscriptionStatus3.ACTIVE
+          }
+        }) : null;
+        return { payment, membership };
       });
-      return res.status(201).json({ payment });
+      return res.status(201).json(result);
     } catch (error) {
       return next(error);
     }
@@ -1443,8 +1488,16 @@ memberPortalRouter.post("/login", async (req, res, next) => {
         fullName: member.fullName,
         email: member.email,
         phone: member.phone,
+        photoUrl: member.photoUrl,
+        nationalId: member.nationalId,
+        heightCm: member.heightCm,
+        weightKg: member.weightKg,
+        bloodType: member.bloodType,
+        occupation: member.occupation,
+        address: member.address,
         gender: member.gender,
         dateOfBirth: member.dateOfBirth,
+        medicalNotes: member.medicalNotes,
         notes: member.notes,
         createdAt: member.createdAt
       },
@@ -1524,8 +1577,26 @@ memberPortalRouter.get("/:gymSlug/:memberId/payments", async (req, res) => {
 // server/saas/app.ts
 function createSaasApp() {
   const app = express();
-  const upload = multer({ storage: multer.memoryStorage() });
-  app.use(helmet());
+  const uploadDir = path.join(process.cwd(), "uploads", "member-photos");
+  fs.mkdirSync(uploadDir, { recursive: true });
+  const upload = multer({
+    storage: multer.diskStorage({
+      destination: (_req, _file, cb) => cb(null, uploadDir),
+      filename: (req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
+        cb(null, `${req.gymId}-${Date.now()}-${crypto2.randomUUID()}${ext}`);
+      }
+    }),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+      if (!file.mimetype.startsWith("image/")) {
+        cb(new Error("Only image uploads are allowed."));
+        return;
+      }
+      cb(null, true);
+    }
+  });
+  app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
   app.use(
     cors({
       origin: SAAS_CONFIG.corsOrigin === "*" ? true : SAAS_CONFIG.corsOrigin,
@@ -1535,6 +1606,7 @@ function createSaasApp() {
   app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ extended: true }));
   app.use(apiRateLimit);
+  app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
   app.get("/api/v1/health", (_req, res) => {
     res.json({
       status: "ok",
@@ -1553,9 +1625,21 @@ function createSaasApp() {
   app.use("/api/v1/reports", reportsRouter);
   app.use("/api/v1/super-admin", superAdminRouter);
   app.use("/api/v1/member-portal", memberPortalRouter);
-  app.post("/api/v1/uploads/member-photo", upload.single("photo"), (_req, res) => {
-    res.status(501).json({ message: "Upload storage integration not configured yet." });
-  });
+  app.post(
+    "/api/v1/uploads/member-photo",
+    requireAuth,
+    resolveTenant,
+    requireRoles(UserRole9.OWNER, UserRole9.MANAGER, UserRole9.RECEPTIONIST),
+    upload.single("photo"),
+    (req, res) => {
+      if (!req.file) {
+        return res.status(400).json({ message: "Photo file is required." });
+      }
+      return res.status(201).json({
+        photoUrl: `/uploads/member-photos/${req.file.filename}`
+      });
+    }
+  );
   app.use((req, res) => {
     res.status(404).json({ message: `Route not found: ${req.method} ${req.path}` });
   });
@@ -1568,6 +1652,12 @@ function createSaasApp() {
           message: issue.message
         }))
       });
+    }
+    if (error instanceof multer.MulterError) {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error instanceof Error && error.message === "Only image uploads are allowed.") {
+      return res.status(400).json({ message: error.message });
     }
     console.error("[SaaS API Error]", error);
     return res.status(500).json({ message: "Internal server error" });

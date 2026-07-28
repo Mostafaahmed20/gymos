@@ -7,6 +7,7 @@ import { SAAS_API_BASE } from "@/lib/saas-api";
 import {
   Activity,
   CalendarCheck2,
+  Camera,
   CreditCard,
   Dumbbell,
   LayoutDashboard,
@@ -37,6 +38,19 @@ type Member = {
   fullName: string;
   email?: string | null;
   phone?: string | null;
+  photoUrl?: string | null;
+  nationalId?: string | null;
+  heightCm?: number | null;
+  weightKg?: number | null;
+  bloodType?: string | null;
+  occupation?: string | null;
+  address?: string | null;
+  emergencyContact?: string | null;
+  emergencyPhone?: string | null;
+  dateOfBirth?: string | null;
+  gender?: string | null;
+  medicalNotes?: string | null;
+  notes?: string | null;
   createdAt: string;
 };
 
@@ -125,6 +139,52 @@ function readSession() {
   }
 }
 
+async function uploadMemberPhoto(file: File) {
+  const token = getAccessToken();
+  const body = new FormData();
+  body.append("photo", file);
+
+  const response = await fetch(`${API_BASE}/uploads/member-photo`, {
+    method: "POST",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body,
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.message ?? "Photo upload failed");
+  }
+  return payload.photoUrl as string;
+}
+
+function assetUrl(url?: string | null) {
+  if (!url) return null;
+  if (/^https?:\/\//i.test(url)) return url;
+  return new URL(url, API_BASE.replace(/\/api\/v1\/?$/, "/")).toString();
+}
+
+function optionalFormString(data: FormData, key: string) {
+  const value = String(data.get(key) ?? "").trim();
+  return value ? value : undefined;
+}
+
+function optionalFormNumber(data: FormData, key: string) {
+  const value = optionalFormString(data, key);
+  return value ? Number(value) : undefined;
+}
+
+function dateInputValue(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function addMonths(date: Date, months: number) {
+  const next = new Date(date);
+  next.setMonth(next.getMonth() + months);
+  return next;
+}
+
 export default function SaasDashboard() {
   const [activeSection, setActiveSection] = useState<Section>("overview");
   const [stats, setStats] = useState<Stats | null>(null);
@@ -137,6 +197,7 @@ export default function SaasDashboard() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [gymInfo, setGymInfo] = useState<GymInfo | null>(null);
+  const [createMembershipWithPayment, setCreateMembershipWithPayment] = useState(true);
   const session = useMemo(readSession, []);
 
   async function loadDashboard() {
@@ -179,7 +240,8 @@ export default function SaasDashboard() {
       member.fullName.toLowerCase().includes(term) ||
       member.code.toLowerCase().includes(term) ||
       member.email?.toLowerCase().includes(term) ||
-      member.phone?.toLowerCase().includes(term)
+      member.phone?.toLowerCase().includes(term) ||
+      member.nationalId?.toLowerCase().includes(term)
     );
   });
 
@@ -191,12 +253,28 @@ export default function SaasDashboard() {
     const data = new FormData(form);
 
     try {
+      const photo = data.get("photo");
+      const photoUrl = photo instanceof File && photo.size > 0 ? await uploadMemberPhoto(photo) : undefined;
+
       await apiFetch("/members", {
         method: "POST",
         body: JSON.stringify({
-          fullName: data.get("fullName"),
-          email: data.get("email") || undefined,
-          phone: data.get("phone") || undefined,
+          fullName: optionalFormString(data, "fullName"),
+          email: optionalFormString(data, "email"),
+          phone: optionalFormString(data, "phone"),
+          photoUrl,
+          nationalId: optionalFormString(data, "nationalId"),
+          heightCm: optionalFormNumber(data, "heightCm"),
+          weightKg: optionalFormNumber(data, "weightKg"),
+          bloodType: optionalFormString(data, "bloodType"),
+          occupation: optionalFormString(data, "occupation"),
+          address: optionalFormString(data, "address"),
+          emergencyContact: optionalFormString(data, "emergencyContact"),
+          emergencyPhone: optionalFormString(data, "emergencyPhone"),
+          dateOfBirth: optionalFormString(data, "dateOfBirth"),
+          gender: optionalFormString(data, "gender"),
+          medicalNotes: optionalFormString(data, "medicalNotes"),
+          notes: optionalFormString(data, "notes"),
         }),
       });
       setMessage("Member added successfully.");
@@ -237,20 +315,35 @@ export default function SaasDashboard() {
     setError("");
     const form = event.currentTarget;
     const data = new FormData(form);
+    const memberId = optionalFormString(data, "memberId");
+    const shouldCreateMembership = data.get("createMembership") === "on";
 
     try {
+      if (shouldCreateMembership && !memberId) {
+        throw new Error("Select a member to activate a membership.");
+      }
+
       await apiFetch("/payments", {
         method: "POST",
         body: JSON.stringify({
-          memberId: data.get("memberId") || undefined,
+          memberId,
           amount: Number(data.get("amount")),
           method: data.get("method"),
-          notes: data.get("notes") || undefined,
+          notes: optionalFormString(data, "notes"),
+          membership:
+            shouldCreateMembership && memberId
+              ? {
+                  planName: optionalFormString(data, "planName") ?? "Monthly Membership",
+                  startDate: data.get("startDate"),
+                  endDate: data.get("endDate"),
+                }
+              : undefined,
         }),
       });
-      setMessage("Payment recorded successfully.");
+      setMessage(shouldCreateMembership && memberId ? "Payment recorded and membership activated." : "Payment recorded successfully.");
       await loadDashboard();
       form.reset();
+      setCreateMembershipWithPayment(true);
     } catch (paymentError) {
       setError(paymentError instanceof Error ? paymentError.message : "Could not record payment");
     }
@@ -293,6 +386,8 @@ export default function SaasDashboard() {
     { label: "Monthly Revenue", value: `$${(stats?.monthlyRevenue ?? 0).toLocaleString()}`, icon: CreditCard },
     { label: "Today Attendance", value: stats?.todayAttendance ?? 0, icon: CalendarCheck2 },
   ];
+  const today = dateInputValue(new Date());
+  const nextMonth = dateInputValue(addMonths(new Date(), 1));
 
   return (
     <div className="flex min-h-screen bg-slate-950 text-white">
@@ -451,6 +546,70 @@ export default function SaasDashboard() {
                     <Label>Phone</Label>
                     <Input name="phone" className="border-white/10 bg-slate-950" />
                   </div>
+                  <div className="space-y-1.5">
+                    <Label>Profile Photo</Label>
+                    <Input name="photo" type="file" accept="image/*" className="border-white/10 bg-slate-950 file:mr-3 file:rounded-md file:border-0 file:bg-emerald-400 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-slate-950" />
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label>National ID</Label>
+                      <Input name="nationalId" className="border-white/10 bg-slate-950" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Gender</Label>
+                      <select name="gender" className="w-full rounded-md border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white">
+                        <option value="">Select</option>
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label>Height (cm)</Label>
+                      <Input name="heightCm" type="number" min="1" step="0.1" className="border-white/10 bg-slate-950" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Weight (kg)</Label>
+                      <Input name="weightKg" type="number" min="1" step="0.1" className="border-white/10 bg-slate-950" />
+                    </div>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label>Date of Birth</Label>
+                      <Input name="dateOfBirth" type="date" className="border-white/10 bg-slate-950" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Blood Type</Label>
+                      <Input name="bloodType" placeholder="e.g. O+" className="border-white/10 bg-slate-950" />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Occupation</Label>
+                    <Input name="occupation" className="border-white/10 bg-slate-950" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Address</Label>
+                    <Input name="address" className="border-white/10 bg-slate-950" />
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label>Emergency Contact</Label>
+                      <Input name="emergencyContact" className="border-white/10 bg-slate-950" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Emergency Phone</Label>
+                      <Input name="emergencyPhone" className="border-white/10 bg-slate-950" />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Medical Notes</Label>
+                    <Input name="medicalNotes" placeholder="Injuries, conditions, restrictions" className="border-white/10 bg-slate-950" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>General Notes</Label>
+                    <Input name="notes" className="border-white/10 bg-slate-950" />
+                  </div>
                   <Button className="w-full bg-emerald-400 text-slate-950 hover:bg-emerald-300">
                     <Plus className="mr-2 h-4 w-4" />
                     Add Member
@@ -470,9 +629,24 @@ export default function SaasDashboard() {
               <CardContent className="space-y-3">
                 {filteredMembers.map((member) => (
                   <div key={member.id} className="flex flex-col gap-3 rounded-lg border border-white/10 bg-slate-950/50 p-4 md:flex-row md:items-center md:justify-between">
-                    <div>
-                      <div className="font-semibold">{member.fullName}</div>
-                      <div className="mt-1 text-xs text-white/55">{member.code} · {member.email ?? "No email"} · {member.phone ?? "No phone"}</div>
+                    <div className="flex items-center gap-3">
+                      {assetUrl(member.photoUrl) ? (
+                        <img src={assetUrl(member.photoUrl)!} alt="" className="h-12 w-12 rounded-full object-cover ring-1 ring-white/10" />
+                      ) : (
+                        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-white/55 ring-1 ring-white/10">
+                          <Camera className="h-5 w-5" />
+                        </div>
+                      )}
+                      <div>
+                        <div className="font-semibold">{member.fullName}</div>
+                        <div className="mt-1 text-xs text-white/55">{member.code} · {member.email ?? "No email"} · {member.phone ?? "No phone"}</div>
+                        <div className="mt-1 flex flex-wrap gap-2 text-xs text-white/45">
+                          {member.nationalId ? <span>ID: {member.nationalId}</span> : null}
+                          {member.heightCm ? <span>{member.heightCm} cm</span> : null}
+                          {member.weightKg ? <span>{member.weightKg} kg</span> : null}
+                          {member.bloodType ? <span>Blood: {member.bloodType}</span> : null}
+                        </div>
+                      </div>
                     </div>
                     <Button size="sm" variant="outline" className="border-white/15 bg-white/5 text-white hover:bg-white/10" onClick={() => checkIn(member.id)}>
                       Check In
@@ -588,10 +762,37 @@ export default function SaasDashboard() {
                     >
                       <option value="CASH">Cash</option>
                       <option value="CARD">Card</option>
-                      <option value="BANK_TRANSFER">Bank Transfer</option>
-                      <option value="OTHER">Other</option>
+                      <option value="WALLET">Wallet</option>
                     </select>
                   </div>
+                  <label className="flex items-center gap-2 rounded-md border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white/80">
+                    <input
+                      name="createMembership"
+                      type="checkbox"
+                      checked={createMembershipWithPayment}
+                      onChange={(event) => setCreateMembershipWithPayment(event.target.checked)}
+                      className="h-4 w-4 accent-emerald-400"
+                    />
+                    Activate membership with this payment
+                  </label>
+                  {createMembershipWithPayment ? (
+                    <div className="space-y-4 rounded-lg border border-emerald-400/20 bg-emerald-400/5 p-3">
+                      <div className="space-y-1.5">
+                        <Label>Plan Name</Label>
+                        <Input name="planName" defaultValue="Monthly Membership" className="border-white/10 bg-slate-950" />
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <Label>Start Date</Label>
+                          <Input name="startDate" type="date" defaultValue={today} required className="border-white/10 bg-slate-950" />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label>End Date</Label>
+                          <Input name="endDate" type="date" defaultValue={nextMonth} required className="border-white/10 bg-slate-950" />
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="space-y-1.5">
                     <Label>Notes (optional)</Label>
                     <Input name="notes" className="border-white/10 bg-slate-950" placeholder="e.g. Monthly membership fee" />

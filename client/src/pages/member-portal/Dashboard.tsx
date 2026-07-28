@@ -20,8 +20,16 @@ type MemberSession = {
   fullName: string;
   email?: string | null;
   phone?: string | null;
+  photoUrl?: string | null;
+  nationalId?: string | null;
+  heightCm?: number | null;
+  weightKg?: number | null;
+  bloodType?: string | null;
+  occupation?: string | null;
+  address?: string | null;
   gender?: string | null;
   dateOfBirth?: string | null;
+  medicalNotes?: string | null;
   notes?: string | null;
   createdAt: string;
 };
@@ -75,6 +83,12 @@ function daysUntil(dateStr: string) {
   return Math.ceil((new Date(dateStr).getTime() - Date.now()) / 86400000);
 }
 
+function assetUrl(url?: string | null) {
+  if (!url) return null;
+  if (/^https?:\/\//i.test(url)) return url;
+  return new URL(url, API_BASE.replace(/\/api\/v1\/?$/, "/")).toString();
+}
+
 function statusColor(status: string) {
   if (status === "ACTIVE") return "bg-emerald-400/15 text-emerald-300 border-emerald-400/30";
   if (status === "FROZEN") return "bg-blue-400/15 text-blue-300 border-blue-400/30";
@@ -96,7 +110,9 @@ export default function MemberPortalDashboard() {
   useEffect(() => {
     if (!member || !gym) {
       window.location.href = "/member-portal/login";
+      return;
     }
+    loadSection("membership");
   }, []);
 
   useEffect(() => {
@@ -139,6 +155,7 @@ export default function MemberPortalDashboard() {
   if (!member || !gym) return null;
 
   const activeMembership = memberships.find((m) => m.status === "ACTIVE");
+  const activeMembershipDays = activeMembership ? Math.max(0, daysUntil(activeMembership.endDate)) : null;
 
   const navItems: { id: Section; label: string; icon: React.ReactNode }[] = [
     { id: "profile", label: "My Profile", icon: <User className="h-4 w-4" /> },
@@ -177,13 +194,34 @@ export default function MemberPortalDashboard() {
       <div className="mx-auto max-w-5xl px-4 py-8">
         {/* Welcome Banner */}
         <div className="mb-6 rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-5 py-4">
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="text-lg font-bold">Welcome back, {member.fullName.split(" ")[0]}!</div>
-              <div className="text-sm text-white/50">Member Code: <span className="font-mono text-emerald-300">{member.code}</span></div>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-4">
+              {assetUrl(member.photoUrl) ? (
+                <img src={assetUrl(member.photoUrl)!} alt="" className="h-16 w-16 rounded-full object-cover ring-2 ring-emerald-300/30" />
+              ) : (
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white/10 text-white/60 ring-1 ring-white/10">
+                  <User className="h-7 w-7" />
+                </div>
+              )}
+              <div>
+                <div className="text-lg font-bold">Welcome back, {member.fullName.split(" ")[0]}!</div>
+                <div className="text-sm text-white/50">Member Code: <span className="font-mono text-emerald-300">{member.code}</span></div>
+              </div>
             </div>
-            <div className="text-sm text-white/50">
-              Member since {new Date(member.createdAt).toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+            <div className="text-left text-sm sm:text-right">
+              {activeMembership ? (
+                <>
+                  <div className={activeMembershipDays !== null && activeMembershipDays <= 7 ? "font-semibold text-amber-300" : "font-semibold text-emerald-300"}>
+                    {activeMembershipDays} days left
+                  </div>
+                  <div className="text-white/50">Ends {new Date(activeMembership.endDate).toLocaleDateString()}</div>
+                </>
+              ) : (
+                <>
+                  <div className="font-semibold text-white/70">No active membership</div>
+                  <div className="text-white/50">Member since {new Date(member.createdAt).toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -224,8 +262,14 @@ export default function MemberPortalDashboard() {
                   ["Member Code", member.code],
                   ["Email", member.email ?? "—"],
                   ["Phone", member.phone ?? "—"],
+                  ["National ID", member.nationalId ?? "—"],
+                  ["Height", member.heightCm ? `${member.heightCm} cm` : "—"],
+                  ["Weight", member.weightKg ? `${member.weightKg} kg` : "—"],
+                  ["Blood Type", member.bloodType ?? "—"],
+                  ["Occupation", member.occupation ?? "—"],
                   ["Gender", member.gender ?? "—"],
                   ["Date of Birth", member.dateOfBirth ? new Date(member.dateOfBirth).toLocaleDateString() : "—"],
+                  ["Address", member.address ?? "—"],
                   ["Member Since", new Date(member.createdAt).toLocaleDateString()],
                 ] as [string, string][]).map(([label, value]) => (
                   <div key={label} className="flex items-center justify-between border-b border-white/5 pb-2">
@@ -233,6 +277,12 @@ export default function MemberPortalDashboard() {
                     <span className={`font-medium ${label === "Member Code" ? "font-mono text-emerald-300" : ""}`}>{value}</span>
                   </div>
                 ))}
+                {member.medicalNotes ? (
+                  <div className="mt-3 rounded-lg border border-amber-400/20 bg-amber-400/5 p-3">
+                    <div className="mb-1 text-xs text-amber-200/80">Medical Notes</div>
+                    <div className="text-sm">{member.medicalNotes}</div>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
 

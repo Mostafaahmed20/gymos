@@ -11,10 +11,27 @@ const createMemberSchema = z.object({
   fullName: z.string().min(2),
   email: z.string().email().optional(),
   phone: z.string().optional(),
+  photoUrl: z.string().optional(),
+  nationalId: z.string().optional(),
+  heightCm: z.preprocess(
+    (val) => (val === "" || val === null ? undefined : val),
+    z.coerce.number().positive().optional()
+  ),
+  weightKg: z.preprocess(
+    (val) => (val === "" || val === null ? undefined : val),
+    z.coerce.number().positive().optional()
+  ),
+  bloodType: z.string().optional(),
+  occupation: z.string().optional(),
+  address: z.string().optional(),
   emergencyContact: z.string().optional(),
   emergencyPhone: z.string().optional(),
-  dateOfBirth: z.coerce.date().optional(),
+  dateOfBirth: z.preprocess(
+    (val) => (val === "" || val === null ? undefined : val),
+    z.coerce.date().optional()
+  ),
   gender: z.string().optional(),
+  medicalNotes: z.string().optional(),
   notes: z.string().optional(),
 });
 
@@ -49,6 +66,7 @@ membersRouter.get("/", async (req, res, next) => {
               { fullName: { contains: parsed.search, mode: "insensitive" as const } },
               { email: { contains: parsed.search, mode: "insensitive" as const } },
               { phone: { contains: parsed.search, mode: "insensitive" as const } },
+              { nationalId: { contains: parsed.search, mode: "insensitive" as const } },
             ],
           }
         : {}),

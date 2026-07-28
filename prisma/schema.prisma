@@ -141,10 +141,17 @@ model Member {
   email             String?
   phone             String?
   photoUrl          String?
+  nationalId        String?
+  heightCm          Float?
+  weightKg          Float?
+  bloodType         String?
+  occupation        String?
+  address           String?
   emergencyContact  String?
   emergencyPhone    String?
   dateOfBirth       DateTime?
   gender            String?
+  medicalNotes      String?
   notes             String?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
@@ -157,6 +164,7 @@ model Member {
   notifications     Notification[]
   workoutPlans      WorkoutPlanAssignment[]
   dietPlans         DietPlanAssignment[]
+  progressRecords   MemberProgressRecord[]
 
   @@unique([gymId, code])
   @@index([gymId, fullName, deletedAt])
@@ -368,6 +376,26 @@ model DietPlanAssignment {
   deletedAt  DateTime?
 
   @@index([gymId, memberId, deletedAt])
+}
+
+model MemberProgressRecord {
+  id             String    @id @default(cuid())
+  gymId          String
+  gym            Gym       @relation(fields: [gymId], references: [id])
+  memberId       String
+  member         Member    @relation(fields: [memberId], references: [id])
+  measuredAt     DateTime  @default(now())
+  weightKg       Float?
+  bodyFatPercent Float?
+  beforePhotoUrl String?
+  afterPhotoUrl  String?
+  notes          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  @@index([gymId, measuredAt, deletedAt])
+  @@index([memberId, measuredAt, deletedAt])
 }
 
 model ActivityLog {

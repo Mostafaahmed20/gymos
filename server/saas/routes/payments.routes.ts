@@ -1,4 +1,4 @@
-import { PaymentMethod, UserRole } from "@prisma/client";
+import { PaymentMethod, SubscriptionStatus, UserRole } from "@prisma/client";
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth";
@@ -11,6 +11,13 @@ const paymentSchema = z.object({
   amount: z.coerce.number().positive(),
   method: z.nativeEnum(PaymentMethod),
   notes: z.string().optional(),
+  membership: z
+    .object({
+      planName: z.string().min(1),
+      startDate: z.coerce.date(),
+      endDate: z.coerce.date(),
+    })
+    .optional(),
 });
 
 const listSchema = z.object({
@@ -71,17 +78,43 @@ paymentsRouter.post(
         if (!member) return res.status(404).json({ message: "Member not found" });
       }
 
-      const payment = await prisma.payment.create({
-        data: {
-          gymId: req.gymId!,
-          memberId: parsed.memberId,
-          amount: parsed.amount,
-          method: parsed.method,
-          notes: parsed.notes,
-        },
+      if (parsed.membership && !parsed.memberId) {
+        return res.status(400).json({ message: "Member is required to create a membership." });
+      }
+
+      if (parsed.membership && parsed.membership.endDate <= parsed.membership.startDate) {
+        return res.status(400).json({ message: "Membership end date must be after start date." });
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        const payment = await tx.payment.create({
+          data: {
+            gymId: req.gymId!,
+            memberId: parsed.memberId,
+            amount: parsed.amount,
+            method: parsed.method,
+            notes: parsed.notes,
+          },
+        });
+
+        const membership = parsed.membership
+          ? await tx.membership.create({
+              data: {
+                gymId: req.gymId!,
+                memberId: parsed.memberId!,
+                planName: parsed.membership.planName,
+                startDate: parsed.membership.startDate,
+                endDate: parsed.membership.endDate,
+                price: parsed.amount,
+                status: SubscriptionStatus.ACTIVE,
+              },
+            })
+          : null;
+
+        return { payment, membership };
       });
 
-      return res.status(201).json({ payment });
+      return res.status(201).json(result);
     } catch (error) {
       return next(error);
     }
