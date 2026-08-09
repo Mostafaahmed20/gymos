@@ -13,8 +13,8 @@ async function start() {
   const app = createSaasApp();
   const server = createServer(app);
 
-  server.listen(SAAS_CONFIG.port, () => {
-    console.log(`[SaaS API] running on http://localhost:${SAAS_CONFIG.port}`);
+  server.listen(SAAS_CONFIG.port, "0.0.0.0", () => {
+    console.log(`[SaaS API] running on http://0.0.0.0:${SAAS_CONFIG.port}`);
   });
 }
 

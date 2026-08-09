@@ -293,3 +293,24 @@ memberPortalRouter.get("/:gymSlug/:memberId/diets", async (req, res) => {
 
   return res.json({ data: assignments });
 });
+
+// GET /api/v1/member-portal/:gymSlug/:memberId/notifications
+memberPortalRouter.get("/:gymSlug/:memberId/notifications", async (req, res) => {
+  const gym = await prisma.gym.findUnique({ where: { slug: req.params.gymSlug } });
+  if (!gym) return res.status(404).json({ message: "Gym not found" });
+
+  const notifications = await prisma.notification.findMany({
+    where: {
+      gymId: gym.id,
+      deletedAt: null,
+      OR: [
+        { memberId: req.params.memberId },
+        { memberId: null }, // Gym-wide promotions
+      ],
+    },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+
+  return res.json({ data: notifications });
+});

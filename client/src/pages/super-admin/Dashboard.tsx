@@ -59,21 +59,62 @@ type Gym = {
 type SessionUser = { fullName: string; email: string; role: string };
 
 function token() { return localStorage.getItem("gymos_access_token"); }
+
+async function refreshAccessToken() {
+  const refreshToken = localStorage.getItem("gymos_refresh_token");
+  if (!refreshToken) return false;
+
+  try {
+    const response = await fetch(`${API_BASE}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken }),
+    });
+
+    if (!response.ok) return false;
+
+    const payload = await response.json();
+    localStorage.setItem("gymos_access_token", payload.accessToken);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function currentUser() {
   const raw = localStorage.getItem("gymos_user");
   if (!raw) return null;
   try { return JSON.parse(raw) as SessionUser; } catch { return null; }
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+async function apiFetch<T>(path: string, init?: RequestInit, retry = true): Promise<T> {
+  let currentToken = token();
+  let response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      ...(token() ? { Authorization: `Bearer ${token()}` } : {}),
+      ...(currentToken ? { Authorization: `Bearer ${currentToken}` } : {}),
       ...init?.headers,
     },
   });
+
+  if (response.status === 401 && retry) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      currentToken = token();
+      response = await fetch(`${API_BASE}${path}`, {
+        ...init,
+        headers: {
+          "Content-Type": "application/json",
+          ...(currentToken ? { Authorization: `Bearer ${currentToken}` } : {}),
+          ...init?.headers,
+        },
+      });
+    } else {
+      window.location.href = "/saas/login";
+      throw new Error("Session expired");
+    }
+  }
+
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (Array.isArray(payload.errors)) {
@@ -336,7 +377,7 @@ export default function SuperAdminDashboard() {
         apiFetch<{ data: Gym[] }>("/super-admin/gyms"),
       ]);
       setAnalytics(analyticsPayload);
-      setGyms(gymsPayload.data);
+      setGyms(Array.isArray(gymsPayload?.data) ? gymsPayload.data : Array.isArray(gymsPayload) ? gymsPayload as unknown as Gym[] : []);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load Super Admin dashboard");
     } finally {

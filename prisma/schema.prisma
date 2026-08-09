@@ -106,6 +106,7 @@ model Gym {
   dietPlans       DietPlan[]
   workoutAssignments WorkoutPlanAssignment[]
   dietAssignments DietPlanAssignment[]
+  progressRecords MemberProgressRecord[]
   activityLogs    ActivityLog[]
   refreshTokens   RefreshToken[]
   backups         BackupJob[]

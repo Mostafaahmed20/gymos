@@ -83,6 +83,7 @@ export default function SaasLogin() {
           </div>
           {error ? <p className="text-sm text-red-300">{error}</p> : null}
           <Button
+            type="submit"
             className="w-full bg-emerald-500 text-slate-950 hover:bg-emerald-400"
             disabled={loading}
           >

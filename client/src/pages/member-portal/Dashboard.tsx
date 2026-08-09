@@ -3,13 +3,30 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { SAAS_API_BASE } from "@/lib/saas-api";
 import {
+  Activity,
+  Bell,
   CalendarCheck2,
+  Camera,
   CreditCard,
   Dumbbell,
   LogOut,
+  Plus,
   ShieldCheck,
+  TrendingUp,
   User,
 } from "lucide-react";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Area,
+  AreaChart,
+} from "recharts";
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { useEffect, useState } from "react";
 
 const API_BASE = SAAS_API_BASE;
@@ -65,12 +82,86 @@ type Payment = {
   notes?: string | null;
 };
 
-type Section = "profile" | "membership" | "attendance" | "payments";
+type ProgressRecord = {
+  id: string;
+  measuredAt: string;
+  weightKg?: number | null;
+  bodyFatPercent?: number | null;
+  beforePhotoUrl?: string | null;
+  afterPhotoUrl?: string | null;
+  notes?: string | null;
+};
+
+type Notification = {
+  id: string;
+  title: string;
+  message: string;
+  createdAt: string;
+};
+
+type Section = "profile" | "membership" | "attendance" | "payments" | "progress" | "notifications";
 
 function getMemberSession(): MemberSession | null {
   const raw = localStorage.getItem("gymos_member");
   if (!raw) return null;
   try { return JSON.parse(raw); } catch { return null; }
+}
+
+async function refreshMemberToken() {
+  const refreshToken = localStorage.getItem("gymos_member_refresh_token");
+  if (!refreshToken) return false;
+
+  try {
+    const response = await fetch(`${API_BASE}/member-portal/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken }),
+    });
+
+    if (!response.ok) return false;
+
+    const payload = await response.json();
+    localStorage.setItem("gymos_member_access_token", payload.accessToken);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit, retry = true): Promise<T> {
+  let token = localStorage.getItem("gymos_member_access_token");
+  let response = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init?.headers,
+    },
+  });
+
+  if (response.status === 401 && retry) {
+    const refreshed = await refreshMemberToken();
+    if (refreshed) {
+      token = localStorage.getItem("gymos_member_access_token");
+      response = await fetch(`${API_BASE}${path}`, {
+        ...init,
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...init?.headers,
+        },
+      });
+    } else {
+      window.location.href = "/member-portal/login";
+      throw new Error("Session expired");
+    }
+  }
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.message ?? "Request failed");
+  }
+  return payload;
 }
 
 function getGymSession(): GymSession | null {
@@ -101,8 +192,16 @@ export default function MemberPortalDashboard() {
   const [memberships, setMemberships] = useState<Membership[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [progressRecords, setProgressRecords] = useState<ProgressRecord[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [showProgressForm, setShowProgressForm] = useState(false);
+  const [newProgress, setNewProgress] = useState({
+    weightKg: "",
+    bodyFatPercent: "",
+    notes: "",
+  });
 
   const member = getMemberSession();
   const gym = getGymSession();
@@ -124,23 +223,47 @@ export default function MemberPortalDashboard() {
     if (section === "profile") return;
     setLoading(true);
     setError("");
-    const base = `${API_BASE}/member-portal/${gym!.slug}/${member!.id}`;
     try {
       if (section === "membership") {
-        const res = await fetch(`${base}/memberships`);
-        const data = await res.json();
+        const data = await apiFetch<{ data: Membership[] }>(`/member-portal/${gym!.slug}/${member!.id}/memberships`);
         setMemberships(data.data ?? []);
       } else if (section === "attendance") {
-        const res = await fetch(`${base}/attendance?pageSize=50`);
-        const data = await res.json();
+        const data = await apiFetch<{ data: Attendance[] }>(`/member-portal/${gym!.slug}/${member!.id}/attendance?pageSize=50`);
         setAttendance(data.data ?? []);
       } else if (section === "payments") {
-        const res = await fetch(`${base}/payments`);
-        const data = await res.json();
+        const data = await apiFetch<{ data: Payment[] }>(`/member-portal/${gym!.slug}/${member!.id}/payments`);
         setPayments(data.data ?? []);
+      } else if (section === "progress") {
+        const data = await apiFetch<{ data: ProgressRecord[] }>(`/member-portal/${gym!.slug}/${member!.id}/progress`);
+        setProgressRecords(data.data ?? []);
+      } else if (section === "notifications") {
+        const data = await apiFetch<{ data: Notification[] }>(`/member-portal/${gym!.slug}/${member!.id}/notifications`);
+        setNotifications(data.data ?? []);
       }
     } catch {
       setError("Failed to load data. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleCreateProgress(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const data = await apiFetch<{ progress: ProgressRecord }>(`/member-portal/${gym!.slug}/${member!.id}/progress`, {
+        method: "POST",
+        body: JSON.stringify({
+          weightKg: newProgress.weightKg ? parseFloat(newProgress.weightKg) : null,
+          bodyFatPercent: newProgress.bodyFatPercent ? parseFloat(newProgress.bodyFatPercent) : null,
+          notes: newProgress.notes,
+        }),
+      });
+      setProgressRecords([data.progress, ...progressRecords]);
+      setShowProgressForm(false);
+      setNewProgress({ weightKg: "", bodyFatPercent: "", notes: "" });
+    } catch (err) {
+      setError("Failed to save progress. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -160,6 +283,8 @@ export default function MemberPortalDashboard() {
   const navItems: { id: Section; label: string; icon: React.ReactNode }[] = [
     { id: "profile", label: "My Profile", icon: <User className="h-4 w-4" /> },
     { id: "membership", label: "Membership", icon: <ShieldCheck className="h-4 w-4" /> },
+    { id: "progress", label: "My Progress", icon: <TrendingUp className="h-4 w-4" /> },
+    { id: "notifications", label: "Notifications", icon: <Bell className="h-4 w-4" /> },
     { id: "attendance", label: "Attendance", icon: <CalendarCheck2 className="h-4 w-4" /> },
     { id: "payments", label: "Payments", icon: <CreditCard className="h-4 w-4" /> },
   ];
@@ -416,6 +541,274 @@ export default function MemberPortalDashboard() {
                       </div>
                     </div>
                     <div className="text-lg font-bold text-emerald-300">${Number(p.amount).toLocaleString()}</div>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {/* Progress Section */}
+        {activeSection === "progress" ? (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">My Progress</h2>
+                <p className="text-white/50 text-sm">Track your body metrics and transformations</p>
+              </div>
+              <Button 
+                onClick={() => setShowProgressForm(true)}
+                className="bg-emerald-500 hover:bg-emerald-600 text-white"
+              >
+                <Plus className="mr-2 h-4 w-4" /> Record Progress
+              </Button>
+            </div>
+
+            {/* Chart Card */}
+            {progressRecords.length > 1 && (
+              <Card className="border-white/10 bg-white/[0.04] text-white">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Activity className="h-5 w-5 text-emerald-400" />
+                    Weight & Body Fat Trends
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="h-[300px] w-full">
+                    <ChartContainer
+                      config={{
+                        weight: { label: "Weight (kg)", color: "hsl(var(--emerald-400))" },
+                        bodyFat: { label: "Body Fat (%)", color: "hsl(var(--blue-400))" },
+                      }}
+                    >
+                      <AreaChart
+                        data={[...progressRecords].reverse().map(r => ({
+                          date: new Date(r.measuredAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+                          weight: r.weightKg,
+                          bodyFat: r.bodyFatPercent,
+                        }))}
+                        margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+                      >
+                        <defs>
+                          <linearGradient id="colorWeight" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                          </linearGradient>
+                          <linearGradient id="colorBodyFat" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" vertical={false} />
+                        <XAxis 
+                          dataKey="date" 
+                          stroke="rgba(255,255,255,0.5)" 
+                          fontSize={12}
+                          tickLine={false}
+                          axisLine={false}
+                        />
+                        <YAxis 
+                          stroke="rgba(255,255,255,0.5)" 
+                          fontSize={12}
+                          tickLine={false}
+                          axisLine={false}
+                          tickFormatter={(value) => `${value}`}
+                        />
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                        <Area 
+                          type="monotone" 
+                          dataKey="weight" 
+                          stroke="#10b981" 
+                          strokeWidth={2}
+                          fillOpacity={1} 
+                          fill="url(#colorWeight)" 
+                        />
+                        <Area 
+                          type="monotone" 
+                          dataKey="bodyFat" 
+                          stroke="#3b82f6" 
+                          strokeWidth={2}
+                          fillOpacity={1} 
+                          fill="url(#colorBodyFat)" 
+                        />
+                      </AreaChart>
+                    </ChartContainer>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Progress Records List */}
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {loading && progressRecords.length === 0 ? (
+                <p className="text-white/50 col-span-full">Loading progress records...</p>
+              ) : progressRecords.length === 0 ? (
+                <Card className="border-white/10 bg-white/[0.04] text-white col-span-full">
+                  <CardContent className="p-12 text-center text-white/50">
+                    <div className="flex flex-col items-center gap-2">
+                      <Activity className="h-12 w-12 opacity-20" />
+                      <p>No progress records yet. Start tracking your journey today!</p>
+                      <Button 
+                        variant="outline" 
+                        onClick={() => setShowProgressForm(true)}
+                        className="mt-4 border-white/10 hover:bg-white/5"
+                      >
+                        Add Your First Record
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : (
+                progressRecords.map((record) => (
+                  <Card key={record.id} className="border-white/10 bg-white/[0.04] text-white overflow-hidden">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium text-white/50">
+                        {new Date(record.measuredAt).toLocaleDateString("en-US", { 
+                          weekday: "long", 
+                          month: "long", 
+                          day: "numeric",
+                          year: "numeric"
+                        })}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-2xl font-bold">{record.weightKg ?? "--"} <span className="text-xs font-normal text-white/50">kg</span></div>
+                          <div className="text-xs text-white/50">Weight</div>
+                        </div>
+                        <div>
+                          <div className="text-2xl font-bold">{record.bodyFatPercent ?? "--"} <span className="text-xs font-normal text-white/50">%</span></div>
+                          <div className="text-xs text-white/50">Body Fat</div>
+                        </div>
+                      </div>
+                      
+                      {record.notes && (
+                        <div className="rounded-lg bg-slate-950/50 p-3 text-sm text-white/70 italic">
+                          "{record.notes}"
+                        </div>
+                      )}
+
+                      {(record.beforePhotoUrl || record.afterPhotoUrl) && (
+                        <div className="grid grid-cols-2 gap-2 pt-2">
+                          {record.beforePhotoUrl && (
+                            <div className="relative aspect-[3/4] rounded-md overflow-hidden bg-slate-900">
+                              <img src={record.beforePhotoUrl} alt="Before" className="object-cover w-full h-full" />
+                              <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-2 py-1 text-[10px] font-bold">BEFORE</div>
+                            </div>
+                          )}
+                          {record.afterPhotoUrl && (
+                            <div className="relative aspect-[3/4] rounded-md overflow-hidden bg-slate-900">
+                              <img src={record.afterPhotoUrl} alt="After" className="object-cover w-full h-full" />
+                              <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-2 py-1 text-[10px] font-bold text-emerald-400">AFTER</div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                ))
+              )}
+            </div>
+
+            {/* Record Progress Form Modal (Simple Overlay) */}
+            {showProgressForm && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+                <Card className="w-full max-w-md border-white/10 bg-slate-900 text-white shadow-2xl">
+                  <CardHeader>
+                    <CardTitle>Record Your Progress</CardTitle>
+                    <p className="text-sm text-white/50">Update your stats to track your fitness journey</p>
+                  </CardHeader>
+                  <CardContent>
+                    <form onSubmit={handleCreateProgress} className="space-y-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-white/70">Weight (kg)</label>
+                          <input 
+                            type="number" 
+                            step="0.1"
+                            value={newProgress.weightKg}
+                            onChange={e => setNewProgress({...newProgress, weightKg: e.target.value})}
+                            className="w-full rounded-md border border-white/10 bg-white/5 p-2 text-white focus:border-emerald-500 focus:outline-none"
+                            placeholder="75.0"
+                            required
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium text-white/70">Body Fat (%)</label>
+                          <input 
+                            type="number" 
+                            step="0.1"
+                            value={newProgress.bodyFatPercent}
+                            onChange={e => setNewProgress({...newProgress, bodyFatPercent: e.target.value})}
+                            className="w-full rounded-md border border-white/10 bg-white/5 p-2 text-white focus:border-emerald-500 focus:outline-none"
+                            placeholder="15.5"
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-white/70">Notes / Feelings</label>
+                        <textarea 
+                          value={newProgress.notes}
+                          onChange={e => setNewProgress({...newProgress, notes: e.target.value})}
+                          className="w-full min-h-[100px] rounded-md border border-white/10 bg-white/5 p-2 text-white focus:border-emerald-500 focus:outline-none"
+                          placeholder="How are you feeling? Any achievements today?"
+                        />
+                      </div>
+
+                      <div className="flex gap-3 pt-4">
+                        <Button 
+                          type="button" 
+                          variant="outline" 
+                          onClick={() => setShowProgressForm(false)}
+                          className="flex-1 border-white/10 hover:bg-white/5 text-white"
+                        >
+                          Cancel
+                        </Button>
+                        <Button 
+                          type="submit" 
+                          disabled={loading}
+                          className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white"
+                        >
+                          {loading ? "Saving..." : "Save Record"}
+                        </Button>
+                      </div>
+                    </form>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {/* Notifications Section */}
+        {activeSection === "notifications" ? (
+          <Card className="border-white/10 bg-white/[0.04] text-white">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Bell className="h-5 w-5 text-emerald-400" />
+                Gym Announcements
+              </CardTitle>
+              <p className="text-sm text-white/50">Stay updated with the latest gym offers and news</p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {loading && notifications.length === 0 ? (
+                <p className="text-white/50">Loading notifications...</p>
+              ) : notifications.length === 0 ? (
+                <div className="py-8 text-center text-white/40">
+                  <Bell className="mx-auto h-12 w-12 opacity-10 mb-2" />
+                  <p>No new notifications at the moment.</p>
+                </div>
+              ) : (
+                notifications.map((n) => (
+                  <div key={n.id} className="rounded-lg border border-white/10 bg-slate-950/50 p-4 transition hover:bg-white/5">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-bold text-emerald-300">{n.title}</h3>
+                      <span className="text-[10px] text-white/30 uppercase tracking-wider">
+                        {new Date(n.createdAt).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <p className="text-sm text-white/70 leading-relaxed whitespace-pre-wrap">{n.message}</p>
                   </div>
                 ))
               )}

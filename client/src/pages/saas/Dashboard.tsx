@@ -111,9 +111,30 @@ function getAccessToken() {
   return localStorage.getItem("gymos_access_token");
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = getAccessToken();
-  const response = await fetch(`${API_BASE}${path}`, {
+async function refreshAccessToken() {
+  const refreshToken = localStorage.getItem("gymos_refresh_token");
+  if (!refreshToken) return false;
+
+  try {
+    const response = await fetch(`${API_BASE}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken }),
+    });
+
+    if (!response.ok) return false;
+
+    const payload = await response.json();
+    localStorage.setItem("gymos_access_token", payload.accessToken);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit, retry = true): Promise<T> {
+  let token = getAccessToken();
+  let response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -121,6 +142,24 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
+
+  if (response.status === 401 && retry) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      token = getAccessToken();
+      response = await fetch(`${API_BASE}${path}`, {
+        ...init,
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...init?.headers,
+        },
+      });
+    } else {
+      window.location.href = "/saas/login";
+      throw new Error("Session expired");
+    }
+  }
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -139,12 +178,12 @@ function readSession() {
   }
 }
 
-async function uploadMemberPhoto(file: File) {
-  const token = getAccessToken();
+async function uploadMemberPhoto(file: File, retry = true): Promise<{ photoUrl: string }> {
+  let token = getAccessToken();
   const body = new FormData();
   body.append("photo", file);
 
-  const response = await fetch(`${API_BASE}/uploads/member-photo`, {
+  let response = await fetch(`${API_BASE}/uploads/member-photo`, {
     method: "POST",
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -152,11 +191,28 @@ async function uploadMemberPhoto(file: File) {
     body,
   });
 
+  if (response.status === 401 && retry) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      token = getAccessToken();
+      response = await fetch(`${API_BASE}/uploads/member-photo`, {
+        method: "POST",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body,
+      });
+    } else {
+      window.location.href = "/saas/login";
+      throw new Error("Session expired");
+    }
+  }
+
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(payload.message ?? "Photo upload failed");
   }
-  return payload.photoUrl as string;
+  return payload as { photoUrl: string };
 }
 
 function assetUrl(url?: string | null) {
@@ -234,7 +290,7 @@ export default function SaasDashboard() {
     loadDashboard();
   }, []);
 
-  const filteredMembers = members.filter((member) => {
+  const filteredMembers = (members || []).filter((member) => {
     const term = search.toLowerCase();
     return (
       member.fullName.toLowerCase().includes(term) ||
@@ -279,7 +335,7 @@ export default function SaasDashboard() {
       });
       setMessage("Member added successfully.");
       await loadDashboard();
-      form.reset();
+      if (form) form.reset();
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Could not add member");
     }
@@ -303,7 +359,7 @@ export default function SaasDashboard() {
       });
       setMessage("Trainer added successfully.");
       await loadDashboard();
-      form.reset();
+      if (form) form.reset();
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Could not add trainer");
     }
@@ -342,7 +398,7 @@ export default function SaasDashboard() {
       });
       setMessage(shouldCreateMembership && memberId ? "Payment recorded and membership activated." : "Payment recorded successfully.");
       await loadDashboard();
-      form.reset();
+      if (form) form.reset();
       setCreateMembershipWithPayment(true);
     } catch (paymentError) {
       setError(paymentError instanceof Error ? paymentError.message : "Could not record payment");
@@ -488,7 +544,7 @@ export default function SaasDashboard() {
                   <CardTitle>Recent Members</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  {members.slice(0, 6).map((member) => (
+                  {(members || []).slice(0, 6).map((member) => (
                     <div key={member.id} className="flex items-center justify-between rounded-lg border border-white/10 bg-slate-950/50 p-3">
                       <div>
                         <div className="font-medium">{member.fullName}</div>
@@ -499,7 +555,7 @@ export default function SaasDashboard() {
                       </Button>
                     </div>
                   ))}
-                  {members.length === 0 ? <p className="text-sm text-white/55">No members yet. Add your first member from the Members section.</p> : null}
+                  {(members || []).length === 0 ? <p className="text-sm text-white/55">No members yet. Add your first member from the Members section.</p> : null}
                 </CardContent>
               </Card>
 
@@ -514,11 +570,11 @@ export default function SaasDashboard() {
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-white/60">Members</span>
-                    <span>{members.length}</span>
+                    <span>{(members || []).length}</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-white/60">Trainers</span>
-                    <span>{coaches.length}</span>
+                    <span>{(coaches || []).length}</span>
                   </div>
                 </CardContent>
               </Card>
@@ -692,14 +748,14 @@ export default function SaasDashboard() {
                 <CardTitle>Trainers</CardTitle>
               </CardHeader>
               <CardContent className="grid gap-3 md:grid-cols-2">
-                {coaches.map((coach) => (
+                {(coaches || []).map((coach) => (
                   <div key={coach.id} className="rounded-lg border border-white/10 bg-slate-950/50 p-4">
                     <div className="font-semibold">{coach.fullName}</div>
                     <div className="mt-1 text-xs text-white/55">{coach.email ?? "No email"}</div>
                     <div className="text-xs text-white/55">{coach.phone ?? "No phone"}</div>
                   </div>
                 ))}
-                {coaches.length === 0 ? <p className="text-sm text-white/55">No trainers yet.</p> : null}
+                {(coaches || []).length === 0 ? <p className="text-sm text-white/55">No trainers yet.</p> : null}
               </CardContent>
             </Card>
           </section>
@@ -712,7 +768,7 @@ export default function SaasDashboard() {
                 <CardTitle>Attendance Log</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                {attendance.map((item) => (
+                {(attendance || []).map((item) => (
                   <div key={item.id} className="flex items-center justify-between rounded-lg border border-white/10 bg-slate-950/50 p-4">
                     <div>
                       <div className="font-medium">{item.member?.fullName ?? "Unknown member"}</div>
@@ -723,7 +779,7 @@ export default function SaasDashboard() {
                     </Badge>
                   </div>
                 ))}
-                {attendance.length === 0 ? <p className="text-sm text-white/55">No attendance records yet. Check in a member from Members.</p> : null}
+                {(attendance || []).length === 0 ? <p className="text-sm text-white/55">No attendance records for today.</p> : null}
               </CardContent>
             </Card>
           </section>
@@ -744,7 +800,7 @@ export default function SaasDashboard() {
                       className="w-full rounded-md border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white"
                     >
                       <option value="">— General / Walk-in —</option>
-                      {members.map((m) => (
+                      {(members || []).map((m) => (
                         <option key={m.id} value={m.id}>{m.fullName} ({m.code})</option>
                       ))}
                     </select>
@@ -810,7 +866,7 @@ export default function SaasDashboard() {
                 <CardTitle>Recent Payments</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                {payments.map((payment) => (
+                {(payments || []).map((payment) => (
                   <div key={payment.id} className="flex items-center justify-between rounded-lg border border-white/10 bg-slate-950/50 p-4">
                     <div>
                       <div className="font-medium">{payment.member?.fullName ?? "General payment"}</div>
@@ -822,7 +878,7 @@ export default function SaasDashboard() {
                     <div className="text-lg font-bold text-emerald-300">${Number(payment.amount).toLocaleString()}</div>
                   </div>
                 ))}
-                {payments.length === 0 ? <p className="text-sm text-white/55">No payments recorded yet. Use the form to record your first payment.</p> : null}
+                {(payments || []).length === 0 ? <p className="text-sm text-white/55">No payments recorded yet. Use the form to record your first payment.</p> : null}
               </CardContent>
             </Card>
           </section>
@@ -883,7 +939,7 @@ export default function SaasDashboard() {
                     <CardContent className="p-5">
                       <div className="text-xs uppercase tracking-widest text-white/50">Max Members</div>
                       <div className="mt-2 text-2xl font-bold">{gymInfo.maxMembers}</div>
-                      <div className="mt-1 text-xs text-white/40">{members.length} used</div>
+                      <div className="mt-1 text-xs text-white/40">{(members || []).length} used</div>
                     </CardContent>
                   </Card>
 
@@ -891,7 +947,7 @@ export default function SaasDashboard() {
                     <CardContent className="p-5">
                       <div className="text-xs uppercase tracking-widest text-white/50">Max Trainers</div>
                       <div className="mt-2 text-2xl font-bold">{gymInfo.maxTrainers}</div>
-                      <div className="mt-1 text-xs text-white/40">{coaches.length} used</div>
+                      <div className="mt-1 text-xs text-white/40">{(coaches || []).length} used</div>
                     </CardContent>
                   </Card>
                 </div>

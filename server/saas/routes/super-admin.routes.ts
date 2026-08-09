@@ -134,15 +134,23 @@ superAdminRouter.post("/gyms", async (req, res, next) => {
     });
     createdGymId = gym.id;
 
-    const tenantDatabase = await bootstrapTenantDatabase({
-      id: gym.id,
-      slug: gym.slug,
-    });
+    // Bootstrap tenant MongoDB database (non-blocking — Atlas may be unreachable in dev)
+    let dbName: string | null = null;
+    try {
+      const tenantDatabase = await bootstrapTenantDatabase({
+        id: gym.id,
+        slug: gym.slug,
+      });
+      dbName = tenantDatabase.databaseName;
+    } catch (dbErr) {
+      console.warn(`[Gym Create] MongoDB provisioning failed for ${gym.slug}:`, (dbErr as Error).message);
+      // Continue — gym record is created, DB can be provisioned later
+    }
 
     const [updatedGym, owner] = await prisma.$transaction([
       prisma.gym.update({
         where: { id: gym.id },
-        data: { databaseName: tenantDatabase.databaseName },
+        data: { databaseName: dbName ?? `gymos_${gym.slug}_pending` },
       }),
       prisma.user.create({
         data: {

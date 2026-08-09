@@ -1,6 +1,12 @@
+/**
+ * createSaasRouter — exports all SaaS API routes as a single Express Router
+ * so they can be mounted directly inside the main app under /api/v1.
+ * This avoids the double-body-parser issue that occurs when mounting a full
+ * Express sub-application.
+ */
 import cors from "cors";
 import crypto from "crypto";
-import express from "express";
+import express, { Router } from "express";
 import fs from "fs";
 import helmet from "helmet";
 import multer from "multer";
@@ -25,20 +31,22 @@ import { superAdminRouter } from "./routes/super-admin.routes";
 import { memberPortalRouter } from "./routes/member-portal.routes";
 import { progressRouter } from "./routes/progress.routes";
 
-export function createSaasApp() {
-  const app = express();
+export function createSaasRouter() {
+  const router = Router();
+
   const uploadDir = path.join(process.cwd(), "uploads", "member-photos");
   fs.mkdirSync(uploadDir, { recursive: true });
+
   const upload = multer({
     storage: multer.diskStorage({
       destination: (_req, _file, cb) => cb(null, uploadDir),
-      filename: (req, file, cb) => {
+      filename: (req: any, file: any, cb: any) => {
         const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
         cb(null, `${req.gymId}-${Date.now()}-${crypto.randomUUID()}${ext}`);
       },
     }),
     limits: { fileSize: 5 * 1024 * 1024 },
-    fileFilter: (_req, file, cb) => {
+    fileFilter: (_req: any, file: any, cb: any) => {
       if (!file.mimetype.startsWith("image/")) {
         cb(new Error("Only image uploads are allowed."));
         return;
@@ -47,19 +55,21 @@ export function createSaasApp() {
     },
   });
 
-  app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-  app.use(
+  router.use(
+    helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }) as any
+  );
+  router.use(
     cors({
       origin: SAAS_CONFIG.corsOrigin === "*" ? true : SAAS_CONFIG.corsOrigin,
       credentials: true,
     })
   );
-  app.use(express.json({ limit: "10mb" }));
-  app.use(express.urlencoded({ extended: true }));
-  app.use(apiRateLimit);
-  app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+  router.use(express.json({ limit: "10mb" }));
+  router.use(express.urlencoded({ extended: true }));
+  router.use(apiRateLimit);
+  router.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
-  app.get("/api/v1/health", (_req, res) => {
+  router.get("/health", (_req, res) => {
     res.json({
       status: "ok",
       service: "gymos-saas-api",
@@ -67,41 +77,37 @@ export function createSaasApp() {
     });
   });
 
-  app.use("/api/v1/auth", authRateLimit, authRouter);
-  app.use("/api/v1/gyms", gymRouter);
-  app.use("/api/v1/dashboard", dashboardRouter);
-  app.use("/api/v1/members", membersRouter);
-  app.use("/api/v1/memberships", membershipsRouter);
-  app.use("/api/v1/coaches", coachesRouter);
-  app.use("/api/v1/attendance", attendanceRouter);
-  app.use("/api/v1/payments", paymentsRouter);
-  app.use("/api/v1/reports", reportsRouter);
-  app.use("/api/v1/super-admin", superAdminRouter);
-  app.use("/api/v1/member-portal", memberPortalRouter);
-  app.use("/api/v1/progress", progressRouter);
+  router.use("/auth", authRateLimit, authRouter);
+  router.use("/gyms", gymRouter);
+  router.use("/dashboard", dashboardRouter);
+  router.use("/members", membersRouter);
+  router.use("/memberships", membershipsRouter);
+  router.use("/coaches", coachesRouter);
+  router.use("/attendance", attendanceRouter);
+  router.use("/payments", paymentsRouter);
+  router.use("/reports", reportsRouter);
+  router.use("/super-admin", superAdminRouter);
+  router.use("/member-portal", memberPortalRouter);
+  router.use("/progress", progressRouter);
 
-  app.post(
-    "/api/v1/uploads/member-photo",
+  router.post(
+    "/uploads/member-photo",
     requireAuth,
     resolveTenant,
     requireRoles(UserRole.OWNER, UserRole.MANAGER, UserRole.RECEPTIONIST),
     upload.single("photo"),
-    (req, res) => {
+    (req: any, res: any) => {
       if (!req.file) {
         return res.status(400).json({ message: "Photo file is required." });
       }
-
       return res.status(201).json({
         photoUrl: `/uploads/member-photos/${req.file.filename}`,
       });
     }
   );
 
-  app.use((req, res) => {
-    res.status(404).json({ message: `Route not found: ${req.method} ${req.path}` });
-  });
-
-  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  // Error handler
+  router.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     if (error instanceof ZodError) {
       return res.status(400).json({
         message: "Validation error",
@@ -111,18 +117,15 @@ export function createSaasApp() {
         })),
       });
     }
-
     if (error instanceof multer.MulterError) {
       return res.status(400).json({ message: error.message });
     }
-
     if (error instanceof Error && error.message === "Only image uploads are allowed.") {
       return res.status(400).json({ message: error.message });
     }
-
     console.error("[SaaS API Error]", error);
     return res.status(500).json({ message: "Internal server error" });
   });
 
-  return app;
+  return router;
 }
