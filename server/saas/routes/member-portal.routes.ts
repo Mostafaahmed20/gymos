@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../prisma";
+import { createAttendanceQrImage, createAttendanceQrToken } from "../utils/attendance-qr";
 
 const memberLoginSchema = z.object({
   gymSlug: z.string().min(2),
@@ -146,49 +147,34 @@ memberPortalRouter.get("/:gymSlug/:memberId/attendance", async (req, res) => {
   return res.json({ data: items, pagination: { page, pageSize, total } });
 });
 
-// POST /api/v1/member-portal/:gymSlug/:memberId/qr-check-in
-memberPortalRouter.post("/:gymSlug/:memberId/qr-check-in", async (req, res, next) => {
+// GET /api/v1/member-portal/:gymSlug/:memberId/attendance-qr
+// This produces a short-lived signed pass. A signed-in gym worker must scan it to record attendance.
+memberPortalRouter.get("/:gymSlug/:memberId/attendance-qr", async (req, res, next) => {
   try {
     const gym = await prisma.gym.findUnique({ where: { slug: req.params.gymSlug } });
-    if (!gym) return res.status(404).json({ message: "Gym not found" });
+    if (!gym || gym.deletedAt) return res.status(404).json({ message: "Gym not found" });
 
     const member = await prisma.member.findFirst({
-      where: {
-        id: req.params.memberId,
-        gymId: gym.id,
-        code: String(req.query.code ?? "").toUpperCase(),
-        deletedAt: null,
-      },
-      select: { id: true },
+      where: { id: req.params.memberId, gymId: gym.id, deletedAt: null },
+      select: { id: true, code: true, fullName: true },
     });
     if (!member) return res.status(404).json({ message: "Member not found" });
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const existing = await prisma.attendance.findFirst({
-      where: {
-        gymId: gym.id,
-        memberId: member.id,
-        deletedAt: null,
-        checkOutAt: null,
-        checkInAt: { gte: today },
-      },
-      orderBy: { checkInAt: "desc" },
+    const { token, expiresAt } = createAttendanceQrToken({
+      gymId: gym.id,
+      gymSlug: gym.slug,
+      memberId: member.id,
+      memberCode: member.code,
     });
+    const qrImageDataUrl = await createAttendanceQrImage(token);
 
-    if (existing) return res.json({ attendance: existing, message: "Already checked in." });
-
-    const attendance = await prisma.attendance.create({
-      data: {
-        gymId: gym.id,
-        memberId: member.id,
-        checkInAt: new Date(),
-        method: "QR",
-      },
+    return res.json({
+      member: { id: member.id, code: member.code, fullName: member.fullName },
+      qrValue: token,
+      qrImageDataUrl,
+      expiresAt,
+      refreshAfterSeconds: 60,
     });
-
-    return res.status(201).json({ attendance, message: "QR check-in recorded." });
   } catch (error) {
     return next(error);
   }

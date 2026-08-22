@@ -19,6 +19,8 @@ export const SAAS_CONFIG = {
   bcryptRounds: toNumber(process.env.BCRYPT_ROUNDS, 10),
   trialDays: toNumber(process.env.TRIAL_DAYS, 30),
   basicMemberLimit: toNumber(process.env.BASIC_MEMBER_LIMIT, 100),
+  qrCheckinTokenMinutes: toNumber(process.env.QR_CHECKIN_TOKEN_MINUTES, 5),
+  qrCheckinSecret: process.env.QR_CHECKIN_SECRET ?? process.env.JWT_ACCESS_SECRET ?? "change-me-qr-secret",
   corsOrigin: process.env.SAAS_CORS_ORIGIN ?? "*",
 };
 

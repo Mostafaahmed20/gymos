@@ -8,6 +8,8 @@ import {
   CalendarCheck2,
   Camera,
   CreditCard,
+  QrCode,
+  RefreshCw,
   Dumbbell,
   LogOut,
   Plus,
@@ -99,7 +101,15 @@ type Notification = {
   createdAt: string;
 };
 
-type Section = "profile" | "membership" | "attendance" | "payments" | "progress" | "notifications";
+type AttendanceQrPass = {
+  member: { id: string; code: string; fullName: string };
+  qrValue: string;
+  qrImageDataUrl: string;
+  expiresAt: string;
+  refreshAfterSeconds: number;
+};
+
+type Section = "profile" | "membership" | "qr" | "attendance" | "payments" | "progress" | "notifications";
 
 function getMemberSession(): MemberSession | null {
   const raw = localStorage.getItem("gymos_member");
@@ -194,6 +204,8 @@ export default function MemberPortalDashboard() {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [progressRecords, setProgressRecords] = useState<ProgressRecord[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [attendanceQr, setAttendanceQr] = useState<AttendanceQrPass | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [showProgressForm, setShowProgressForm] = useState(false);
@@ -219,8 +231,26 @@ export default function MemberPortalDashboard() {
     loadSection(activeSection);
   }, [activeSection]);
 
+  async function loadAttendanceQr() {
+    if (!member || !gym) return;
+    setQrLoading(true);
+    setError("");
+    try {
+      const pass = await apiFetch<AttendanceQrPass>(`/member-portal/${gym.slug}/${member.id}/attendance-qr`);
+      setAttendanceQr(pass);
+    } catch {
+      setError("Could not generate your QR pass. Please try again.");
+    } finally {
+      setQrLoading(false);
+    }
+  }
+
   async function loadSection(section: Section) {
     if (section === "profile") return;
+    if (section === "qr") {
+      await loadAttendanceQr();
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -285,6 +315,7 @@ export default function MemberPortalDashboard() {
     { id: "membership", label: "Membership", icon: <ShieldCheck className="h-4 w-4" /> },
     { id: "progress", label: "My Progress", icon: <TrendingUp className="h-4 w-4" /> },
     { id: "notifications", label: "Notifications", icon: <Bell className="h-4 w-4" /> },
+    { id: "qr", label: "My QR Pass", icon: <QrCode className="h-4 w-4" /> },
     { id: "attendance", label: "Attendance", icon: <CalendarCheck2 className="h-4 w-4" /> },
     { id: "payments", label: "Payments", icon: <CreditCard className="h-4 w-4" /> },
   ];
@@ -479,6 +510,56 @@ export default function MemberPortalDashboard() {
               })
             )}
           </div>
+        ) : null}
+
+        {/* QR Attendance Pass */}
+        {activeSection === "qr" ? (
+          <Card className="border-emerald-400/20 bg-white/[0.04] text-white">
+            <CardHeader>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2"><QrCode className="h-5 w-5 text-emerald-300" /> My QR Check-in Pass</CardTitle>
+                  <p className="mt-1 text-sm text-white/50">Show this secure pass to reception when you arrive.</p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void loadAttendanceQr()}
+                  disabled={qrLoading}
+                  className="border-white/15 bg-white/5 text-white hover:bg-white/10"
+                >
+                  <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${qrLoading ? "animate-spin" : ""}`} />
+                  Refresh pass
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {qrLoading && !attendanceQr ? (
+                <div className="py-14 text-center text-sm text-white/50">Generating your secure QR pass…</div>
+              ) : attendanceQr ? (
+                <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_240px] md:items-center">
+                  <div className="space-y-3">
+                    <div className="text-xl font-bold">{member.fullName}</div>
+                    <div className="font-mono text-sm text-emerald-300">{member.code}</div>
+                    <p className="max-w-lg text-sm leading-6 text-white/60">
+                      This pass is signed for <strong className="text-white">{gym.name}</strong> and expires at {new Date(attendanceQr.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Refresh it if reception tells you it has expired.
+                    </p>
+                    <div className="rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-xs text-amber-100/80">
+                      For your security, reception must scan the code from a signed-in GymOS account. A screenshot may expire quickly.
+                    </div>
+                  </div>
+                  <div className="mx-auto rounded-2xl bg-white p-3 shadow-xl shadow-emerald-500/10">
+                    <img src={attendanceQr.qrImageDataUrl} alt="Secure QR check-in pass" className="h-52 w-52" />
+                  </div>
+                </div>
+              ) : (
+                <div className="py-12 text-center">
+                  <p className="mb-3 text-sm text-white/55">Your QR pass is not available yet.</p>
+                  <Button onClick={() => void loadAttendanceQr()} className="bg-emerald-400 text-slate-950 hover:bg-emerald-300">Generate pass</Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         ) : null}
 
         {/* Attendance Section */}

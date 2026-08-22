@@ -77,6 +77,19 @@ type Attendance = {
   member?: { fullName: string; code: string } | null;
 };
 
+type QrCheckInResult = {
+  attendance: Attendance;
+  member: { id: string; fullName: string; code: string };
+  alreadyCheckedIn: boolean;
+  message: string;
+};
+
+type NativeBarcodeDetector = {
+  detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue?: string }>>;
+};
+
+type NativeBarcodeDetectorConstructor = new (options?: { formats?: string[] }) => NativeBarcodeDetector;
+
 type UserSession = {
   fullName: string;
   email: string;
@@ -254,6 +267,10 @@ export default function SaasDashboard() {
   const [loading, setLoading] = useState(true);
   const [gymInfo, setGymInfo] = useState<GymInfo | null>(null);
   const [createMembershipWithPayment, setCreateMembershipWithPayment] = useState(true);
+  const [qrTokenInput, setQrTokenInput] = useState("");
+  const [qrSubmitting, setQrSubmitting] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scannerVideo, setScannerVideo] = useState<HTMLVideoElement | null>(null);
   const session = useMemo(readSession, []);
 
   async function loadDashboard() {
@@ -419,6 +436,94 @@ export default function SaasDashboard() {
       setError(checkInError instanceof Error ? checkInError.message : "Could not check in member");
     }
   }
+
+  async function checkInWithQr(qrToken: string) {
+    const token = qrToken.trim();
+    if (!token) {
+      setError("Scan a member QR code or paste its full QR value first.");
+      return;
+    }
+
+    setQrSubmitting(true);
+    setMessage("");
+    setError("");
+    try {
+      const result = await apiFetch<QrCheckInResult>("/attendance/qr-check-in", {
+        method: "POST",
+        body: JSON.stringify({ qrToken: token }),
+      });
+      setMessage(result.message);
+      setQrTokenInput("");
+      await loadDashboard();
+    } catch (checkInError) {
+      setError(checkInError instanceof Error ? checkInError.message : "QR check-in could not be recorded.");
+    } finally {
+      setQrSubmitting(false);
+    }
+  }
+
+  function submitQrCheckIn(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void checkInWithQr(qrTokenInput);
+  }
+
+  useEffect(() => {
+    if (!scannerOpen || !scannerVideo) return;
+
+    let active = true;
+    let stream: MediaStream | null = null;
+    let scanTimer: number | undefined;
+
+    const stopScanner = () => {
+      if (scanTimer) window.clearTimeout(scanTimer);
+      stream?.getTracks().forEach((track) => track.stop());
+      if (scannerVideo.srcObject) scannerVideo.srcObject = null;
+    };
+
+    const startScanner = async () => {
+      const Detector = (window as Window & { BarcodeDetector?: NativeBarcodeDetectorConstructor }).BarcodeDetector;
+      if (!Detector) {
+        setError("Camera QR scanning is not supported in this browser. Paste the QR value from a scanner app instead.");
+        setScannerOpen(false);
+        return;
+      }
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+        if (!active) return stopScanner();
+        scannerVideo.srcObject = stream;
+        await scannerVideo.play();
+        const detector = new Detector({ formats: ["qr_code"] });
+
+        const scan = async () => {
+          if (!active) return;
+          try {
+            const codes = await detector.detect(scannerVideo);
+            const qrValue = codes[0]?.rawValue?.trim();
+            if (qrValue) {
+              setQrTokenInput(qrValue);
+              setScannerOpen(false);
+              void checkInWithQr(qrValue);
+              return;
+            }
+          } catch {
+            // A camera frame can be temporarily unavailable; retry while the scanner remains open.
+          }
+          scanTimer = window.setTimeout(scan, 250);
+        };
+        void scan();
+      } catch {
+        setError("Camera access was not granted. Allow camera access, then try again.");
+        setScannerOpen(false);
+      }
+    };
+
+    void startScanner();
+    return () => {
+      active = false;
+      stopScanner();
+    };
+  }, [scannerOpen, scannerVideo]);
 
   function logout() {
     localStorage.removeItem("gymos_access_token");
@@ -762,7 +867,47 @@ export default function SaasDashboard() {
         ) : null}
 
         {!loading && activeSection === "attendance" ? (
-          <section className="mt-8">
+          <section className="mt-8 space-y-5">
+            <Card className="border-emerald-400/20 bg-emerald-400/[0.04] text-white">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2"><Camera className="h-5 w-5 text-emerald-300" /> QR Check-in Station</CardTitle>
+                <p className="text-sm text-white/55">Open the camera to scan a member&apos;s temporary QR pass, or paste the full pass value from a compatible scanner.</p>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex flex-wrap gap-3">
+                  <Button
+                    type="button"
+                    onClick={() => setScannerOpen((open) => !open)}
+                    className="bg-emerald-400 text-slate-950 hover:bg-emerald-300"
+                  >
+                    <Camera className="mr-2 h-4 w-4" />
+                    {scannerOpen ? "Close Camera" : "Open Camera Scanner"}
+                  </Button>
+                  <span className="self-center text-xs text-white/50">Each QR pass expires in a few minutes for security.</span>
+                </div>
+
+                {scannerOpen ? (
+                  <div className="overflow-hidden rounded-xl border border-emerald-400/25 bg-black">
+                    <video ref={setScannerVideo} muted playsInline className="max-h-80 w-full object-cover" />
+                    <div className="border-t border-white/10 px-3 py-2 text-center text-xs text-white/60">Point the camera at the member&apos;s GymOS QR pass.</div>
+                  </div>
+                ) : null}
+
+                <form className="flex flex-col gap-2 sm:flex-row" onSubmit={submitQrCheckIn}>
+                  <Input
+                    value={qrTokenInput}
+                    onChange={(event) => setQrTokenInput(event.target.value)}
+                    placeholder="Paste a GymOS QR pass value"
+                    className="border-white/10 bg-slate-950 font-mono text-xs"
+                    aria-label="QR pass value"
+                  />
+                  <Button type="submit" disabled={qrSubmitting} variant="outline" className="border-white/15 bg-white/5 text-white hover:bg-white/10">
+                    {qrSubmitting ? "Checking in…" : "Confirm QR Check-in"}
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
+
             <Card className="border-white/10 bg-white/[0.04] text-white">
               <CardHeader>
                 <CardTitle>Attendance Log</CardTitle>
