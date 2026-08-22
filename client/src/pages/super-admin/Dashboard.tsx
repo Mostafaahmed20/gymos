@@ -17,11 +17,14 @@ import {
   RefreshCw,
   RotateCcw,
   Shield,
+  TrendingUp,
+  AlertTriangle,
   Trash2,
   Users,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Link } from "wouter";
 
 const API_BASE = SAAS_API_BASE;
@@ -31,6 +34,27 @@ type Analytics = {
   activeGyms: number;
   totalMembers: number;
   totalRevenue: number;
+};
+
+type FinancialAnalytics = {
+  asOf: string;
+  totalRecordedRevenue: number;
+  currentMonthRevenue: number;
+  previousMonthRevenue: number;
+  revenueChangePercent: number | null;
+  monthlyRevenue: Array<{ key: string; month: string; revenue: number }>;
+  revenueByMethod: Array<{ method: string; revenue: number }>;
+  planMix: Array<{ plan: string; count: number }>;
+  subscriptionHealth: {
+    active: number;
+    trial: number;
+    expired: number;
+    suspended: number;
+    cancelled: number;
+    expiringWithin30Days: number;
+    createdLast30Days: number;
+    portfolioChurnRate: number;
+  };
 };
 
 type Gym = {
@@ -358,6 +382,7 @@ function DeleteConfirm({ gym, onClose, onDeleted }: { gym: Gym; onClose: () => v
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function SuperAdminDashboard() {
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [financialAnalytics, setFinancialAnalytics] = useState<FinancialAnalytics | null>(null);
   const [gyms, setGyms] = useState<Gym[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -372,12 +397,14 @@ export default function SuperAdminDashboard() {
     setLoading(true);
     setError("");
     try {
-      const [analyticsPayload, gymsPayload] = await Promise.all([
+      const [analyticsPayload, gymsPayload, financialPayload] = await Promise.all([
         apiFetch<Analytics>("/super-admin/analytics"),
         apiFetch<{ data: Gym[] }>("/super-admin/gyms"),
+        apiFetch<FinancialAnalytics>("/super-admin/financial-analytics"),
       ]);
       setAnalytics(analyticsPayload);
       setGyms(Array.isArray(gymsPayload?.data) ? gymsPayload.data : Array.isArray(gymsPayload) ? gymsPayload as unknown as Gym[] : []);
+      setFinancialAnalytics(financialPayload);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Could not load Super Admin dashboard");
     } finally {
@@ -524,6 +551,42 @@ export default function SuperAdminDashboard() {
                 );
               })}
             </section>
+
+            {/* Financial Analytics */}
+            {financialAnalytics ? (
+              <section className="mt-8 space-y-5">
+                <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                  <div>
+                    <h2 className="text-xl font-bold">Financial & Subscription Analytics</h2>
+                    <p className="text-sm text-white/55">Platform-wide recorded payments and tenant subscription health.</p>
+                  </div>
+                  <div className="text-xs text-white/45">Updated {new Date(financialAnalytics.asOf).toLocaleString()}</div>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <Card className="border-white/10 bg-white/[0.04] text-white"><CardContent className="p-5"><CreditCard className="h-5 w-5 text-emerald-300" /><div className="mt-4 text-2xl font-bold">${financialAnalytics.currentMonthRevenue.toLocaleString()}</div><div className="mt-1 text-xs uppercase tracking-[0.14em] text-white/55">Revenue this month</div></CardContent></Card>
+                  <Card className="border-white/10 bg-white/[0.04] text-white"><CardContent className="p-5"><TrendingUp className="h-5 w-5 text-emerald-300" /><div className={`mt-4 text-2xl font-bold ${financialAnalytics.revenueChangePercent !== null && financialAnalytics.revenueChangePercent < 0 ? "text-red-300" : "text-emerald-300"}`}>{financialAnalytics.revenueChangePercent === null ? "—" : `${financialAnalytics.revenueChangePercent >= 0 ? "+" : ""}${financialAnalytics.revenueChangePercent.toFixed(1)}%`}</div><div className="mt-1 text-xs uppercase tracking-[0.14em] text-white/55">vs. prior month</div></CardContent></Card>
+                  <Card className="border-white/10 bg-white/[0.04] text-white"><CardContent className="p-5"><CalendarClock className="h-5 w-5 text-amber-300" /><div className="mt-4 text-2xl font-bold">{financialAnalytics.subscriptionHealth.expiringWithin30Days}</div><div className="mt-1 text-xs uppercase tracking-[0.14em] text-white/55">Renewals due in 30 days</div></CardContent></Card>
+                  <Card className="border-white/10 bg-white/[0.04] text-white"><CardContent className="p-5"><AlertTriangle className="h-5 w-5 text-amber-300" /><div className="mt-4 text-2xl font-bold">{financialAnalytics.subscriptionHealth.portfolioChurnRate.toFixed(1)}%</div><div className="mt-1 text-xs uppercase tracking-[0.14em] text-white/55">Portfolio churn rate</div></CardContent></Card>
+                </div>
+
+                <div className="grid gap-5 xl:grid-cols-[1.5fr_1fr]">
+                  <Card className="border-white/10 bg-white/[0.04] text-white">
+                    <CardHeader><CardTitle>Recorded Revenue Trend</CardTitle><p className="text-sm text-white/55">Monthly payments captured across all gyms, for the last six calendar months.</p></CardHeader>
+                    <CardContent>{financialAnalytics.monthlyRevenue.every((item) => item.revenue === 0) ? <div className="flex h-72 items-center justify-center text-sm text-white/50">No recorded payments in the last six months.</div> : <div className="h-72"><ResponsiveContainer width="100%" height="100%"><AreaChart data={financialAnalytics.monthlyRevenue} margin={{ top: 10, right: 12, left: 0, bottom: 0 }}><defs><linearGradient id="revenueFill" x1="0" x2="0" y1="0" y2="1"><stop offset="5%" stopColor="#34d399" stopOpacity={0.45} /><stop offset="95%" stopColor="#34d399" stopOpacity={0} /></linearGradient></defs><CartesianGrid strokeDasharray="3 3" stroke="#ffffff12" /><XAxis dataKey="month" tick={{ fill: "#94a3b8", fontSize: 12 }} axisLine={false} tickLine={false} /><YAxis tick={{ fill: "#94a3b8", fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={(value) => `$${Number(value).toLocaleString()}`} /><Tooltip contentStyle={{ background: "#0f172a", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8 }} labelStyle={{ color: "#e2e8f0" }} formatter={(value) => [`$${Number(value).toLocaleString()}`, "Revenue"]} /><Area type="monotone" dataKey="revenue" stroke="#34d399" strokeWidth={2.5} fill="url(#revenueFill)" /></AreaChart></ResponsiveContainer></div>}</CardContent>
+                  </Card>
+                  <Card className="border-white/10 bg-white/[0.04] text-white">
+                    <CardHeader><CardTitle>Revenue by Payment Method</CardTitle><p className="text-sm text-white/55">Recorded revenue split by payment collection method.</p></CardHeader>
+                    <CardContent>{financialAnalytics.revenueByMethod.length === 0 ? <div className="flex h-72 items-center justify-center text-sm text-white/50">No recorded payments yet.</div> : <div className="h-72"><ResponsiveContainer width="100%" height="100%"><BarChart data={financialAnalytics.revenueByMethod} layout="vertical" margin={{ top: 5, right: 16, left: 14, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="#ffffff12" horizontal={false} /><XAxis type="number" tick={{ fill: "#94a3b8", fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={(value) => `$${Number(value).toLocaleString()}`} /><YAxis type="category" dataKey="method" width={72} tick={{ fill: "#cbd5e1", fontSize: 12 }} axisLine={false} tickLine={false} /><Tooltip contentStyle={{ background: "#0f172a", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8 }} labelStyle={{ color: "#e2e8f0" }} formatter={(value) => [`$${Number(value).toLocaleString()}`, "Revenue"]} /><Bar dataKey="revenue" fill="#60a5fa" radius={[0, 5, 5, 0]} /></BarChart></ResponsiveContainer></div>}</CardContent>
+                  </Card>
+                </div>
+
+                <div className="grid gap-5 xl:grid-cols-2">
+                  <Card className="border-white/10 bg-white/[0.04] text-white"><CardHeader><CardTitle>Subscription Health</CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-3">{([ ["Active", financialAnalytics.subscriptionHealth.active, "text-emerald-300"], ["Trial", financialAnalytics.subscriptionHealth.trial, "text-blue-300"], ["Expired", financialAnalytics.subscriptionHealth.expired, "text-red-300"], ["Suspended", financialAnalytics.subscriptionHealth.suspended, "text-amber-300"], ["Cancelled", financialAnalytics.subscriptionHealth.cancelled, "text-red-300"], ["New in 30 days", financialAnalytics.subscriptionHealth.createdLast30Days, "text-emerald-300"] ] as [string, number, string][]).map(([label, value, color]) => <div key={label} className="rounded-lg border border-white/10 bg-slate-950/50 p-3"><div className={`text-2xl font-bold ${color}`}>{value}</div><div className="mt-1 text-xs text-white/55">{label}</div></div>)}</CardContent></Card>
+                  <Card className="border-white/10 bg-white/[0.04] text-white"><CardHeader><CardTitle>Plan Mix</CardTitle><p className="text-sm text-white/55">Current gyms by subscribed plan.</p></CardHeader><CardContent className="space-y-4">{financialAnalytics.planMix.length === 0 ? <p className="text-sm text-white/50">No active gyms yet.</p> : financialAnalytics.planMix.map((item) => { const total = Math.max(1, financialAnalytics.planMix.reduce((sum, plan) => sum + plan.count, 0)); const percent = (item.count / total) * 100; return <div key={item.plan}><div className="mb-1 flex items-center justify-between text-sm"><span>{item.plan}</span><span className="text-white/55">{item.count} gyms · {percent.toFixed(0)}%</span></div><div className="h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-emerald-400" style={{ width: `${percent}%` }} /></div></div>; })}</CardContent></Card>
+                </div>
+              </section>
+            ) : null}
 
             {/* Create Gym Form */}
             <section className="mt-8">

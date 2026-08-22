@@ -305,3 +305,93 @@ superAdminRouter.get("/analytics", async (_req, res) => {
     totalRevenue: Number(revenueAgg._sum.amount ?? 0),
   });
 });
+
+// GET /super-admin/financial-analytics — platform-wide operational finance dashboard
+superAdminRouter.get("/financial-analytics", async (_req, res) => {
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const previousMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const previousMonthEnd = monthStart;
+  const sixMonthStart = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+  const thirtyDaysFromNow = new Date(now);
+  thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+
+  const [gyms, payments, allRevenue, currentMonthRevenue, previousMonthRevenue, expiringSoon] = await Promise.all([
+    prisma.gym.findMany({
+      where: { deletedAt: null },
+      select: { id: true, plan: true, status: true, createdAt: true, trialEndDate: true, subscriptionEnd: true },
+    }),
+    prisma.payment.findMany({
+      where: { deletedAt: null, paidAt: { gte: sixMonthStart } },
+      select: { amount: true, paidAt: true, method: true },
+      orderBy: { paidAt: "asc" },
+    }),
+    prisma.payment.aggregate({ where: { deletedAt: null }, _sum: { amount: true } }),
+    prisma.payment.aggregate({ where: { deletedAt: null, paidAt: { gte: monthStart } }, _sum: { amount: true } }),
+    prisma.payment.aggregate({
+      where: { deletedAt: null, paidAt: { gte: previousMonthStart, lt: previousMonthEnd } },
+      _sum: { amount: true },
+    }),
+    prisma.gym.count({
+      where: {
+        deletedAt: null,
+        OR: [
+          { subscriptionEnd: { gte: now, lte: thirtyDaysFromNow } },
+          { subscriptionEnd: null, trialEndDate: { gte: now, lte: thirtyDaysFromNow } },
+        ],
+      },
+    }),
+  ]);
+
+  const months = Array.from({ length: 6 }, (_, offset) => {
+    const date = new Date(now.getFullYear(), now.getMonth() - (5 - offset), 1);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    return { key, month: date.toLocaleString("en-US", { month: "short" }), revenue: 0 };
+  });
+  const monthLookup = new Map(months.map((month) => [month.key, month]));
+  const revenueByMethod = new Map<string, number>();
+
+  for (const payment of payments) {
+    const key = `${payment.paidAt.getFullYear()}-${String(payment.paidAt.getMonth() + 1).padStart(2, "0")}`;
+    const amount = Number(payment.amount);
+    const month = monthLookup.get(key);
+    if (month) month.revenue += amount;
+    revenueByMethod.set(payment.method, (revenueByMethod.get(payment.method) ?? 0) + amount);
+  }
+
+  const planCounts = new Map<string, number>();
+  const statusCounts = new Map<string, number>();
+  let createdLast30Days = 0;
+  for (const gym of gyms) {
+    planCounts.set(gym.plan, (planCounts.get(gym.plan) ?? 0) + 1);
+    statusCounts.set(gym.status, (statusCounts.get(gym.status) ?? 0) + 1);
+    if (gym.createdAt >= new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)) createdLast30Days += 1;
+  }
+
+  const activePortfolio = (statusCounts.get(GymStatus.ACTIVE) ?? 0) + (statusCounts.get(GymStatus.TRIAL) ?? 0);
+  const cancelledPortfolio = statusCounts.get(GymStatus.CANCELLED) ?? 0;
+  const portfolioBase = activePortfolio + cancelledPortfolio;
+  const previousRevenue = Number(previousMonthRevenue._sum.amount ?? 0);
+  const currentRevenue = Number(currentMonthRevenue._sum.amount ?? 0);
+
+  return res.json({
+    asOf: now.toISOString(),
+    totalRecordedRevenue: Number(allRevenue._sum.amount ?? 0),
+    currentMonthRevenue: currentRevenue,
+    previousMonthRevenue: previousRevenue,
+    revenueChangePercent: previousRevenue > 0 ? ((currentRevenue - previousRevenue) / previousRevenue) * 100 : null,
+    monthlyRevenue: months,
+    revenueByMethod: Array.from(revenueByMethod, ([method, revenue]) => ({ method, revenue })),
+    planMix: Array.from(planCounts, ([plan, count]) => ({ plan, count })),
+    subscriptionHealth: {
+      active: statusCounts.get(GymStatus.ACTIVE) ?? 0,
+      trial: statusCounts.get(GymStatus.TRIAL) ?? 0,
+      expired: statusCounts.get(GymStatus.EXPIRED) ?? 0,
+      suspended: statusCounts.get(GymStatus.SUSPENDED) ?? 0,
+      cancelled: cancelledPortfolio,
+      expiringWithin30Days: expiringSoon,
+      createdLast30Days,
+      portfolioChurnRate: portfolioBase > 0 ? (cancelledPortfolio / portfolioBase) * 100 : 0,
+    },
+  });
+});
