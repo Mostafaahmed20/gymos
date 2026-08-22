@@ -109,7 +109,20 @@ type AttendanceQrPass = {
   refreshAfterSeconds: number;
 };
 
-type Section = "profile" | "membership" | "qr" | "attendance" | "payments" | "progress" | "notifications";
+type WorkoutAssignment = {
+  id: string;
+  assignedAt: string;
+  coach?: { fullName: string } | null;
+  workoutPlan: { name: string; details?: { description?: string; exercises?: Array<{ name: string; sets?: string; reps?: string; notes?: string }> } | null };
+};
+
+type DietAssignment = {
+  id: string;
+  assignedAt: string;
+  dietPlan: { name: string; details?: { description?: string; meals?: Array<{ name: string; time?: string; foods: string; calories?: number }> } | null };
+};
+
+type Section = "profile" | "membership" | "plans" | "qr" | "attendance" | "payments" | "progress" | "notifications";
 
 function getMemberSession(): MemberSession | null {
   const raw = localStorage.getItem("gymos_member");
@@ -205,6 +218,8 @@ export default function MemberPortalDashboard() {
   const [progressRecords, setProgressRecords] = useState<ProgressRecord[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [attendanceQr, setAttendanceQr] = useState<AttendanceQrPass | null>(null);
+  const [workoutAssignments, setWorkoutAssignments] = useState<WorkoutAssignment[]>([]);
+  const [dietAssignments, setDietAssignments] = useState<DietAssignment[]>([]);
   const [qrLoading, setQrLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -269,6 +284,13 @@ export default function MemberPortalDashboard() {
       } else if (section === "notifications") {
         const data = await apiFetch<{ data: Notification[] }>(`/member-portal/${gym!.slug}/${member!.id}/notifications`);
         setNotifications(data.data ?? []);
+      } else if (section === "plans") {
+        const [workouts, diets] = await Promise.all([
+          apiFetch<{ data: WorkoutAssignment[] }>(`/member-portal/${gym!.slug}/${member!.id}/workouts`),
+          apiFetch<{ data: DietAssignment[] }>(`/member-portal/${gym!.slug}/${member!.id}/diets`),
+        ]);
+        setWorkoutAssignments(workouts.data ?? []);
+        setDietAssignments(diets.data ?? []);
       }
     } catch {
       setError("Failed to load data. Please try again.");
@@ -314,6 +336,7 @@ export default function MemberPortalDashboard() {
     { id: "profile", label: "My Profile", icon: <User className="h-4 w-4" /> },
     { id: "membership", label: "Membership", icon: <ShieldCheck className="h-4 w-4" /> },
     { id: "progress", label: "My Progress", icon: <TrendingUp className="h-4 w-4" /> },
+    { id: "plans", label: "My Plans", icon: <Dumbbell className="h-4 w-4" /> },
     { id: "notifications", label: "Notifications", icon: <Bell className="h-4 w-4" /> },
     { id: "qr", label: "My QR Pass", icon: <QrCode className="h-4 w-4" /> },
     { id: "attendance", label: "Attendance", icon: <CalendarCheck2 className="h-4 w-4" /> },
@@ -509,6 +532,36 @@ export default function MemberPortalDashboard() {
                 );
               })
             )}
+          </div>
+        ) : null}
+
+        {/* Assigned Plans */}
+        {activeSection === "plans" ? (
+          <div className="grid gap-5 lg:grid-cols-2">
+            <Card className="border-white/10 bg-white/[0.04] text-white">
+              <CardHeader><CardTitle className="flex items-center gap-2"><Dumbbell className="h-5 w-5 text-emerald-300" /> My Workout Plans</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                {loading ? <p className="text-sm text-white/50">Loading workout plans...</p> : workoutAssignments.length === 0 ? <p className="text-sm text-white/50">No workout plan has been assigned yet.</p> : workoutAssignments.map((assignment) => (
+                  <div key={assignment.id} className="rounded-lg border border-white/10 bg-slate-950/50 p-4">
+                    <div className="flex items-start justify-between gap-3"><div><div className="font-semibold">{assignment.workoutPlan.name}</div>{assignment.coach?.fullName ? <div className="mt-1 text-xs text-emerald-200">Coach: {assignment.coach.fullName}</div> : null}</div><span className="text-xs text-white/45">{new Date(assignment.assignedAt).toLocaleDateString()}</span></div>
+                    {assignment.workoutPlan.details?.description ? <p className="mt-3 text-sm text-white/60">{assignment.workoutPlan.details.description}</p> : null}
+                    <div className="mt-3 space-y-2">{assignment.workoutPlan.details?.exercises?.map((exercise, index) => <div key={`${exercise.name}-${index}`} className="rounded-md border border-white/5 bg-white/[0.03] px-3 py-2 text-sm"><span className="font-medium">{exercise.name}</span>{exercise.sets || exercise.reps ? <span className="ml-2 text-white/55">{[exercise.sets && `${exercise.sets} sets`, exercise.reps && `${exercise.reps} reps`].filter(Boolean).join(" · ")}</span> : null}{exercise.notes ? <div className="mt-1 text-xs text-white/45">{exercise.notes}</div> : null}</div>)}</div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+            <Card className="border-white/10 bg-white/[0.04] text-white">
+              <CardHeader><CardTitle className="flex items-center gap-2"><Activity className="h-5 w-5 text-emerald-300" /> My Nutrition Plans</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                {loading ? <p className="text-sm text-white/50">Loading nutrition plans...</p> : dietAssignments.length === 0 ? <p className="text-sm text-white/50">No nutrition plan has been assigned yet.</p> : dietAssignments.map((assignment) => (
+                  <div key={assignment.id} className="rounded-lg border border-white/10 bg-slate-950/50 p-4">
+                    <div className="flex items-start justify-between gap-3"><div className="font-semibold">{assignment.dietPlan.name}</div><span className="text-xs text-white/45">{new Date(assignment.assignedAt).toLocaleDateString()}</span></div>
+                    {assignment.dietPlan.details?.description ? <p className="mt-3 text-sm text-white/60">{assignment.dietPlan.details.description}</p> : null}
+                    <div className="mt-3 space-y-2">{assignment.dietPlan.details?.meals?.map((meal, index) => <div key={`${meal.name}-${index}`} className="rounded-md border border-white/5 bg-white/[0.03] px-3 py-2 text-sm"><div className="flex justify-between gap-3"><span className="font-medium">{meal.name}</span><span className="text-xs text-emerald-200">{meal.time ?? "Any time"}{meal.calories !== undefined ? ` · ${meal.calories} kcal` : ""}</span></div><div className="mt-1 text-xs text-white/55">{meal.foods}</div></div>)}</div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
           </div>
         ) : null}
 

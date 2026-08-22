@@ -24,6 +24,7 @@ import { reportsRouter } from "./routes/reports.routes";
 import { superAdminRouter } from "./routes/super-admin.routes";
 import { memberPortalRouter } from "./routes/member-portal.routes";
 import { progressRouter } from "./routes/progress.routes";
+import { plansRouter } from "./routes/plans.routes";
 
 export function createSaasApp() {
   const app = express();
@@ -79,6 +80,7 @@ export function createSaasApp() {
   app.use("/api/v1/super-admin", superAdminRouter);
   app.use("/api/v1/member-portal", memberPortalRouter);
   app.use("/api/v1/progress", progressRouter);
+  app.use("/api/v1/plans", plansRouter);
 
   app.post(
     "/api/v1/uploads/member-photo",

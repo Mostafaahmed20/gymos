@@ -118,7 +118,40 @@ type GymInfo = {
   createdAt: string;
 };
 
-type Section = "overview" | "members" | "trainers" | "attendance" | "payments" | "settings";
+type PlanAssignment = {
+  id: string;
+  member: { id: string; fullName: string; code: string };
+};
+
+type WorkoutExercise = {
+  name: string;
+  sets?: string;
+  reps?: string;
+  notes?: string;
+};
+
+type DietMeal = {
+  name: string;
+  time?: string;
+  foods: string;
+  calories?: number;
+};
+
+type WorkoutPlan = {
+  id: string;
+  name: string;
+  details?: { description?: string; exercises?: WorkoutExercise[] } | null;
+  assignments: PlanAssignment[];
+};
+
+type DietPlan = {
+  id: string;
+  name: string;
+  details?: { description?: string; meals?: DietMeal[] } | null;
+  assignments: PlanAssignment[];
+};
+
+type Section = "overview" | "members" | "trainers" | "plans" | "attendance" | "payments" | "settings";
 
 function getAccessToken() {
   return localStorage.getItem("gymos_access_token");
@@ -261,6 +294,10 @@ export default function SaasDashboard() {
   const [coaches, setCoaches] = useState<Coach[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
+  const [workoutPlans, setWorkoutPlans] = useState<WorkoutPlan[]>([]);
+  const [dietPlans, setDietPlans] = useState<DietPlan[]>([]);
+  const [workoutExercises, setWorkoutExercises] = useState<WorkoutExercise[]>([{ name: "", sets: "", reps: "", notes: "" }]);
+  const [dietMeals, setDietMeals] = useState<DietMeal[]>([{ name: "", time: "", foods: "", calories: undefined }]);
   const [search, setSearch] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -277,21 +314,25 @@ export default function SaasDashboard() {
     setLoading(true);
     setError("");
     try {
-      const [statsPayload, membersPayload, coachesPayload, paymentsPayload, attendancePayload, gymPayload] = await Promise.all([
+      const [statsPayload, membersPayload, coachesPayload, paymentsPayload, attendancePayload, gymPayload, workoutPlansPayload, dietPlansPayload] = await Promise.all([
         apiFetch<Stats>("/dashboard/stats"),
         apiFetch<{ data: Member[] }>("/members?pageSize=50"),
         apiFetch<{ data: Coach[] }>("/coaches"),
         apiFetch<{ data: Payment[] }>("/payments?pageSize=20"),
         apiFetch<{ data: Attendance[] }>("/attendance?pageSize=20"),
         apiFetch<{ gym: GymInfo }>("/gyms/me"),
+        apiFetch<{ data: WorkoutPlan[] }>("/plans/workouts"),
+        apiFetch<{ data: DietPlan[] }>("/plans/diets"),
       ]);
 
       setStats(statsPayload);
-      setMembers(membersPayload.data);
-      setCoaches(coachesPayload.data);
-      setPayments(paymentsPayload.data);
-      setAttendance(attendancePayload.data);
+      setMembers(Array.isArray(membersPayload.data) ? membersPayload.data : []);
+      setCoaches(Array.isArray(coachesPayload.data) ? coachesPayload.data : []);
+      setPayments(Array.isArray(paymentsPayload.data) ? paymentsPayload.data : []);
+      setAttendance(Array.isArray(attendancePayload.data) ? attendancePayload.data : []);
       setGymInfo(gymPayload.gym);
+      setWorkoutPlans(Array.isArray(workoutPlansPayload.data) ? workoutPlansPayload.data : []);
+      setDietPlans(Array.isArray(dietPlansPayload.data) ? dietPlansPayload.data : []);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load dashboard");
     } finally {
@@ -379,6 +420,100 @@ export default function SaasDashboard() {
       if (form) form.reset();
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Could not add trainer");
+    }
+  }
+
+  function updateWorkoutExercise(index: number, field: keyof WorkoutExercise, value: string) {
+    setWorkoutExercises((current) => current.map((exercise, exerciseIndex) => (
+      exerciseIndex === index ? { ...exercise, [field]: value } : exercise
+    )));
+  }
+
+  function updateDietMeal(index: number, field: keyof DietMeal, value: string) {
+    setDietMeals((current) => current.map((meal, mealIndex) => {
+      if (mealIndex !== index) return meal;
+      return { ...meal, [field]: field === "calories" && value !== "" ? Number(value) : field === "calories" ? undefined : value };
+    }));
+  }
+
+  async function createWorkoutPlan(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const exercises = workoutExercises
+      .map((exercise) => ({
+        name: exercise.name.trim(),
+        sets: exercise.sets?.trim() || undefined,
+        reps: exercise.reps?.trim() || undefined,
+        notes: exercise.notes?.trim() || undefined,
+      }))
+      .filter((exercise) => exercise.name);
+
+    if (exercises.length === 0) {
+      setError("Add at least one exercise with a name.");
+      return;
+    }
+
+    setMessage("");
+    setError("");
+    try {
+      const memberId = optionalFormString(data, "memberId");
+      await apiFetch("/plans/workouts", {
+        method: "POST",
+        body: JSON.stringify({
+          name: optionalFormString(data, "name"),
+          description: optionalFormString(data, "description"),
+          exercises,
+          memberIds: memberId ? [memberId] : [],
+          coachId: optionalFormString(data, "coachId"),
+        }),
+      });
+      setMessage(memberId ? "Workout plan created and assigned." : "Workout plan created successfully.");
+      setWorkoutExercises([{ name: "", sets: "", reps: "", notes: "" }]);
+      if (form) form.reset();
+      await loadDashboard();
+    } catch (planError) {
+      setError(planError instanceof Error ? planError.message : "Could not create workout plan");
+    }
+  }
+
+  async function createDietPlan(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const meals = dietMeals
+      .map((meal) => ({
+        name: meal.name.trim(),
+        time: meal.time?.trim() || undefined,
+        foods: meal.foods.trim(),
+        calories: meal.calories,
+      }))
+      .filter((meal) => meal.name && meal.foods);
+
+    if (meals.length === 0) {
+      setError("Add at least one meal with a name and foods.");
+      return;
+    }
+
+    setMessage("");
+    setError("");
+    try {
+      const memberId = optionalFormString(data, "memberId");
+      await apiFetch("/plans/diets", {
+        method: "POST",
+        body: JSON.stringify({
+          name: optionalFormString(data, "name"),
+          description: optionalFormString(data, "description"),
+          meals,
+          memberIds: memberId ? [memberId] : [],
+        }),
+      });
+      setMessage(memberId ? "Nutrition plan created and assigned." : "Nutrition plan created successfully.");
+      setDietMeals([{ name: "", time: "", foods: "", calories: undefined }]);
+      if (form) form.reset();
+      await loadDashboard();
+    } catch (planError) {
+      setError(planError instanceof Error ? planError.message : "Could not create nutrition plan");
     }
   }
 
@@ -536,6 +671,7 @@ export default function SaasDashboard() {
     { id: "overview" as const, label: "Overview", icon: LayoutDashboard },
     { id: "members" as const, label: "Members", icon: Users },
     { id: "trainers" as const, label: "Trainers", icon: UserCheck },
+    { id: "plans" as const, label: "Plans", icon: Dumbbell },
     { id: "attendance" as const, label: "Attendance", icon: CalendarCheck2 },
     { id: "payments" as const, label: "Payments", icon: CreditCard },
     { id: "settings" as const, label: "Tenant", icon: ShieldCheck },
@@ -863,6 +999,83 @@ export default function SaasDashboard() {
                 {(coaches || []).length === 0 ? <p className="text-sm text-white/55">No trainers yet.</p> : null}
               </CardContent>
             </Card>
+          </section>
+        ) : null}
+
+        {!loading && activeSection === "plans" ? (
+          <section className="mt-8 space-y-6">
+            <div>
+              <h2 className="text-xl font-bold text-white">Workout & Nutrition Plans</h2>
+              <p className="mt-1 text-sm text-white/55">Create member-ready routines and meal plans, then assign them when you save.</p>
+            </div>
+
+            <div className="grid gap-5 xl:grid-cols-2">
+              <Card className="border-white/10 bg-white/[0.04] text-white">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2"><Dumbbell className="h-5 w-5 text-emerald-300" /> Create Workout Plan</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <form className="space-y-4" onSubmit={createWorkoutPlan}>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-1.5"><Label>Plan Name</Label><Input name="name" required placeholder="e.g. Strength Foundations" className="border-white/10 bg-slate-950" /></div>
+                      <div className="space-y-1.5"><Label>Assign to member</Label><select name="memberId" className="w-full rounded-md border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white"><option value="">Save as a reusable plan</option>{members.map((member) => <option key={member.id} value={member.id}>{member.fullName} ({member.code})</option>)}</select></div>
+                    </div>
+                    <div className="space-y-1.5"><Label>Coach (optional)</Label><select name="coachId" className="w-full rounded-md border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white"><option value="">No coach selected</option>{coaches.map((coach) => <option key={coach.id} value={coach.id}>{coach.fullName}</option>)}</select></div>
+                    <div className="space-y-1.5"><Label>Goal / Description</Label><textarea name="description" rows={2} placeholder="Plan goal, weekly schedule, or important guidance" className="w-full rounded-md border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white placeholder:text-white/35" /></div>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between"><Label>Exercises</Label><Button type="button" size="sm" variant="outline" onClick={() => setWorkoutExercises((items) => [...items, { name: "", sets: "", reps: "", notes: "" }])} className="border-white/15 bg-white/5 text-white hover:bg-white/10"><Plus className="mr-1 h-3.5 w-3.5" /> Add exercise</Button></div>
+                      {workoutExercises.map((exercise, index) => (
+                        <div key={index} className="rounded-lg border border-white/10 bg-slate-950/50 p-3">
+                          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_74px_74px_auto]">
+                            <Input value={exercise.name} onChange={(event) => updateWorkoutExercise(index, "name", event.target.value)} placeholder="Exercise name" className="border-white/10 bg-slate-950" />
+                            <Input value={exercise.sets ?? ""} onChange={(event) => updateWorkoutExercise(index, "sets", event.target.value)} placeholder="Sets" className="border-white/10 bg-slate-950" />
+                            <Input value={exercise.reps ?? ""} onChange={(event) => updateWorkoutExercise(index, "reps", event.target.value)} placeholder="Reps" className="border-white/10 bg-slate-950" />
+                            {workoutExercises.length > 1 ? <Button type="button" size="icon" variant="outline" onClick={() => setWorkoutExercises((items) => items.filter((_, itemIndex) => itemIndex !== index))} className="border-red-400/25 bg-red-400/5 text-red-200 hover:bg-red-400/15">×</Button> : <span />}
+                          </div>
+                          <Input value={exercise.notes ?? ""} onChange={(event) => updateWorkoutExercise(index, "notes", event.target.value)} placeholder="Optional coaching notes" className="mt-2 border-white/10 bg-slate-950" />
+                        </div>
+                      ))}
+                    </div>
+                    <Button className="w-full bg-emerald-400 text-slate-950 hover:bg-emerald-300"><Dumbbell className="mr-2 h-4 w-4" /> Save Workout Plan</Button>
+                  </form>
+                </CardContent>
+              </Card>
+
+              <Card className="border-white/10 bg-white/[0.04] text-white">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2"><Activity className="h-5 w-5 text-emerald-300" /> Create Nutrition Plan</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <form className="space-y-4" onSubmit={createDietPlan}>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-1.5"><Label>Plan Name</Label><Input name="name" required placeholder="e.g. Lean Muscle Nutrition" className="border-white/10 bg-slate-950" /></div>
+                      <div className="space-y-1.5"><Label>Assign to member</Label><select name="memberId" className="w-full rounded-md border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white"><option value="">Save as a reusable plan</option>{members.map((member) => <option key={member.id} value={member.id}>{member.fullName} ({member.code})</option>)}</select></div>
+                    </div>
+                    <div className="space-y-1.5"><Label>Goal / Description</Label><textarea name="description" rows={2} placeholder="Nutrition goal, hydration, allergy, or preparation notes" className="w-full rounded-md border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white placeholder:text-white/35" /></div>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between"><Label>Meals</Label><Button type="button" size="sm" variant="outline" onClick={() => setDietMeals((items) => [...items, { name: "", time: "", foods: "", calories: undefined }])} className="border-white/15 bg-white/5 text-white hover:bg-white/10"><Plus className="mr-1 h-3.5 w-3.5" /> Add meal</Button></div>
+                      {dietMeals.map((meal, index) => (
+                        <div key={index} className="rounded-lg border border-white/10 bg-slate-950/50 p-3">
+                          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_100px_90px_auto]">
+                            <Input value={meal.name} onChange={(event) => updateDietMeal(index, "name", event.target.value)} placeholder="Meal name" className="border-white/10 bg-slate-950" />
+                            <Input value={meal.time ?? ""} onChange={(event) => updateDietMeal(index, "time", event.target.value)} placeholder="Time" className="border-white/10 bg-slate-950" />
+                            <Input type="number" min="0" value={meal.calories ?? ""} onChange={(event) => updateDietMeal(index, "calories", event.target.value)} placeholder="Calories" className="border-white/10 bg-slate-950" />
+                            {dietMeals.length > 1 ? <Button type="button" size="icon" variant="outline" onClick={() => setDietMeals((items) => items.filter((_, itemIndex) => itemIndex !== index))} className="border-red-400/25 bg-red-400/5 text-red-200 hover:bg-red-400/15">×</Button> : <span />}
+                          </div>
+                          <Input value={meal.foods} onChange={(event) => updateDietMeal(index, "foods", event.target.value)} placeholder="Foods and portions, e.g. eggs, oats, fruit" className="mt-2 border-white/10 bg-slate-950" />
+                        </div>
+                      ))}
+                    </div>
+                    <Button className="w-full bg-emerald-400 text-slate-950 hover:bg-emerald-300"><Activity className="mr-2 h-4 w-4" /> Save Nutrition Plan</Button>
+                  </form>
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="grid gap-5 xl:grid-cols-2">
+              <Card className="border-white/10 bg-white/[0.04] text-white"><CardHeader><CardTitle>Saved Workout Plans</CardTitle></CardHeader><CardContent className="space-y-3">{workoutPlans.length === 0 ? <p className="text-sm text-white/55">No workout plans created yet.</p> : workoutPlans.map((plan) => <div key={plan.id} className="rounded-lg border border-white/10 bg-slate-950/50 p-4"><div className="flex items-start justify-between gap-3"><div><div className="font-semibold">{plan.name}</div><p className="mt-1 text-xs text-white/55">{plan.details?.description || "No description"}</p></div><span className="rounded-full bg-emerald-400/10 px-2 py-1 text-xs text-emerald-200">{plan.details?.exercises?.length ?? 0} exercises</span></div><div className="mt-3 flex flex-wrap gap-1.5">{plan.assignments.length ? plan.assignments.map((assignment) => <span key={assignment.id} className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-xs text-white/70">{assignment.member.fullName}</span>) : <span className="text-xs text-white/45">Reusable — not assigned yet</span>}</div></div>)}</CardContent></Card>
+              <Card className="border-white/10 bg-white/[0.04] text-white"><CardHeader><CardTitle>Saved Nutrition Plans</CardTitle></CardHeader><CardContent className="space-y-3">{dietPlans.length === 0 ? <p className="text-sm text-white/55">No nutrition plans created yet.</p> : dietPlans.map((plan) => <div key={plan.id} className="rounded-lg border border-white/10 bg-slate-950/50 p-4"><div className="flex items-start justify-between gap-3"><div><div className="font-semibold">{plan.name}</div><p className="mt-1 text-xs text-white/55">{plan.details?.description || "No description"}</p></div><span className="rounded-full bg-emerald-400/10 px-2 py-1 text-xs text-emerald-200">{plan.details?.meals?.length ?? 0} meals</span></div><div className="mt-3 flex flex-wrap gap-1.5">{plan.assignments.length ? plan.assignments.map((assignment) => <span key={assignment.id} className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-xs text-white/70">{assignment.member.fullName}</span>) : <span className="text-xs text-white/45">Reusable — not assigned yet</span>}</div></div>)}</CardContent></Card>
+            </div>
           </section>
         ) : null}
 

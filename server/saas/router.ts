@@ -30,6 +30,7 @@ import { reportsRouter } from "./routes/reports.routes";
 import { superAdminRouter } from "./routes/super-admin.routes";
 import { memberPortalRouter } from "./routes/member-portal.routes";
 import { progressRouter } from "./routes/progress.routes";
+import { plansRouter } from "./routes/plans.routes";
 
 export function createSaasRouter() {
   const router = Router();
@@ -89,6 +90,7 @@ export function createSaasRouter() {
   router.use("/super-admin", superAdminRouter);
   router.use("/member-portal", memberPortalRouter);
   router.use("/progress", progressRouter);
+  router.use("/plans", plansRouter);
 
   router.post(
     "/uploads/member-photo",
