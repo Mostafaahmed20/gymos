@@ -1,0 +1,59 @@
+services:
+  - type: web
+    name: gymos
+    runtime: docker
+    plan: starter
+    # A persistent disk preserves member-profile and progress photos across deploys.
+    # Disk-backed services run as a single instance, which is appropriate for this initial SaaS deployment.
+    disk:
+      name: gymos-uploads
+      mountPath: /app/uploads
+      sizeGB: 1
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: DATABASE_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB
+        value: gymos
+      - key: SAAS_MONGODB_URI
+        sync: false
+      - key: SAAS_PLATFORM_DB
+        value: gymos_platform
+      - key: SAAS_TENANT_DB_PREFIX
+        value: gymos
+      - key: APP_BASE_DOMAIN
+        sync: false
+      - key: SAAS_CORS_ORIGIN
+        sync: false
+      - key: VITE_SAAS_API_URL
+        value: /api/v1
+      - key: VITE_AUTH_LOGIN_URL
+        sync: false
+      - key: AUTH_JWT_SECRET
+        generateValue: true
+      - key: SESSION_JWT_SECRET
+        generateValue: true
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: QR_CHECKIN_SECRET
+        generateValue: true
+      - key: JWT_ACCESS_MINUTES
+        value: "30"
+      - key: JWT_REFRESH_DAYS
+        value: "30"
+      - key: QR_CHECKIN_TOKEN_MINUTES
+        value: "5"
+      - key: BCRYPT_ROUNDS
+        value: "12"
+      - key: TRIAL_DAYS
+        value: "30"
+      - key: BASIC_MEMBER_LIMIT
+        value: "100"

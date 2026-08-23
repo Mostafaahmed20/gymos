@@ -1,0 +1,14 @@
+node_modules
+.git
+.gitignore
+.env
+.env.*
+!.env.local.example
+dist
+dist-saas
+uploads
+coverage
+*.log
+*.md
+list-dbs.mjs
+seed-*.mjs
