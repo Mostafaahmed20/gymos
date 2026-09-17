@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { SAAS_CONFIG } from "../config";
 import { prisma } from "../prisma";
-import { getTenantDatabase, tenantDatabaseName } from "../services/tenant-database";
+import { tenantDatabaseName } from "../services/tenant-database";
 import { isGymLicenseActive } from "../services/tenant-policy";
 
 function extractSlugFromHost(host?: string) {
@@ -74,8 +74,10 @@ export async function resolveTenant(req: Request, res: Response, next: NextFunct
       });
     }
 
+    // GymOS operational data is tenant-scoped in PostgreSQL via req.gymId. MongoDB
+    // provisioning is optional infrastructure and must not block every Gym Admin
+    // request when Atlas is temporarily unavailable or its network rules are changing.
     req.tenantDatabaseName = tenantDatabaseName(gym);
-    req.tenantDatabase = await getTenantDatabase(gym);
 
     return next();
   } catch (error) {
