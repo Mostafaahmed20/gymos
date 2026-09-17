@@ -23,7 +23,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Link } from "wouter";
 
@@ -108,6 +108,12 @@ function currentUser() {
   const raw = localStorage.getItem("gymos_user");
   if (!raw) return null;
   try { return JSON.parse(raw) as SessionUser; } catch { return null; }
+}
+
+function clearSaasSession() {
+  localStorage.removeItem("gymos_access_token");
+  localStorage.removeItem("gymos_refresh_token");
+  localStorage.removeItem("gymos_user");
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit, retry = true): Promise<T> {
@@ -391,7 +397,22 @@ export default function SuperAdminDashboard() {
   const [editGym, setEditGym] = useState<Gym | null>(null);
   const [renewGym, setRenewGym] = useState<Gym | null>(null);
   const [deleteGym, setDeleteGym] = useState<Gym | null>(null);
-  const user = useMemo(currentUser, []);
+  const [user, setUser] = useState<SessionUser | null>(() => currentUser());
+
+  async function verifySuperAdminSession() {
+    const session = await apiFetch<{ user: SessionUser | null }>("/auth/me");
+    if (session.user?.role !== "SUPER_ADMIN") {
+      clearSaasSession();
+      window.location.href = "/saas/login";
+      return false;
+    }
+
+    // The access token is the source of truth. Sync the display session so an
+    // older role stored in this browser cannot make privileged actions fail.
+    localStorage.setItem("gymos_user", JSON.stringify(session.user));
+    setUser(session.user);
+    return true;
+  }
 
   async function loadPlatform() {
     setLoading(true);
@@ -414,7 +435,14 @@ export default function SuperAdminDashboard() {
 
   useEffect(() => {
     if (!token()) { window.location.href = "/saas/login"; return; }
-    loadPlatform();
+    void verifySuperAdminSession()
+      .then((isSuperAdmin) => {
+        if (isSuperAdmin) return loadPlatform();
+      })
+      .catch(() => {
+        clearSaasSession();
+        window.location.href = "/saas/login";
+      });
   }, []);
 
   async function createGym(event: React.FormEvent<HTMLFormElement>) {
@@ -468,9 +496,7 @@ export default function SuperAdminDashboard() {
   }
 
   function logout() {
-    localStorage.removeItem("gymos_access_token");
-    localStorage.removeItem("gymos_refresh_token");
-    localStorage.removeItem("gymos_user");
+    clearSaasSession();
     window.location.href = "/saas/login";
   }
 
